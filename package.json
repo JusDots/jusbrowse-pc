@@ -1,0 +1,54 @@
+{
+  "name": "jusbrowse-desktop",
+  "version": "1.0.0",
+  "description": "JusBrowse Chromium desktop browser for Linux and Windows",
+  "main": "electron/main.js",
+  "author": "JusBrowse",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist:linux": "electron-builder --linux AppImage deb rpm",
+    "dist:win": "electron-builder --win nsis portable",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^31.3.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.jusdots.jusbrowse.desktop",
+    "productName": "JusBrowse",
+    "copyright": "Copyright (c) 2026 JusDots",
+    "asar": true,
+    "files": [
+      "electron/**/*",
+      "ui/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ],
+      "icon": "build/icons/icon.png",
+      "category": "Network",
+      "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icons/icon.ico",
+      "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
