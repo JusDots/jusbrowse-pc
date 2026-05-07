@@ -10,8 +10,40 @@ class BrowserViewModel {
     this.isLoading = false;
     this.tabs = [];
     this.activeTabId = null;
+    this.externalAuthNotices = [];
+    this.passwordPrompts = [];
+    this.adblockStats = { blockedCount: 0, hostCount: 0, source: "fallback", ready: false };
+    // Memoized wallpaper resolution: the renderer used to compose the data: URL on every
+    // settings render which forced the PNG to re-decode through the cssparser. Cache it by
+    // input so subsequent renders reuse the same string.
+    this._wallpaperCache = new Map();
     this.settings = this.loadSettings();
     this.history = this.loadHistory();
+  }
+
+  resolveWallpaperImage(themePreset) {
+    const enableWallpapers = Boolean(this.settings.enableWallpapers);
+    if (!enableWallpapers) return "";
+    const customSource = this.settings.wallpaperDataUrl || this.settings.startPageWallpaper;
+    const themeKey = String(themePreset || this.settings.themePreset || "dark").toLowerCase();
+    const cacheKey = customSource ? `c:${customSource}` : `t:${themeKey}`;
+    if (this._wallpaperCache.has(cacheKey)) return this._wallpaperCache.get(cacheKey);
+    let resolved = "";
+    if (customSource) {
+      const isRemoteOrFile =
+        /^https?:\/\//i.test(customSource) ||
+        /^file:\/\//i.test(customSource) ||
+        /^data:/i.test(customSource);
+      resolved = isRemoteOrFile ? `url("${customSource}")` : customSource;
+    } else if (themeKey && themeKey !== "custom") {
+      resolved = `url("../assets/wallpapers/theme-${themeKey}.png")`;
+    }
+    this._wallpaperCache.set(cacheKey, resolved);
+    return resolved;
+  }
+
+  invalidateWallpaperCache() {
+    this._wallpaperCache.clear();
   }
 
   update(next) {
@@ -78,7 +110,10 @@ class BrowserViewModel {
       fontSource: "system",
       googleFontFamily: "Inter",
       customFontFamily: "",
-      savePasswords: true
+      savePasswords: true,
+      pillPosition: "bottom",
+      showAdblockShield: true,
+      stickers: []
     };
 
     try {
@@ -96,6 +131,14 @@ class BrowserViewModel {
 
   updateSettings(patch) {
     this.settings = { ...this.settings, ...(patch || {}) };
+    if (patch && (
+      "enableWallpapers" in patch ||
+      "wallpaperDataUrl" in patch ||
+      "startPageWallpaper" in patch ||
+      "themePreset" in patch
+    )) {
+      this.invalidateWallpaperCache();
+    }
     this.saveSettings();
   }
 
@@ -138,6 +181,86 @@ class BrowserViewModel {
   clearHistory() {
     this.history = [];
     this.saveHistory();
+  }
+
+  addPasswordPrompt(prompt) {
+    const safe = prompt && typeof prompt === "object" ? prompt : {};
+    const normalized = {
+      id: String(safe.id || `pw-${Date.now()}`),
+      host: String(safe.host || ""),
+      username: String(safe.username || ""),
+      capturedAt: Number(safe.capturedAt || Date.now())
+    };
+    this.passwordPrompts = [...this.passwordPrompts, normalized].slice(-3);
+    return normalized;
+  }
+
+  removePasswordPrompt(id) {
+    this.passwordPrompts = this.passwordPrompts.filter((entry) => entry.id !== id);
+  }
+
+  setAdblockStats(stats) {
+    if (!stats || typeof stats !== "object") return;
+    this.adblockStats = {
+      blockedCount: Number(stats.blockedCount || 0),
+      hostCount: Number(stats.hostCount || 0),
+      source: String(stats.source || "fallback"),
+      ready: Boolean(stats.ready)
+    };
+  }
+
+  getStickers() {
+    return Array.isArray(this.settings.stickers) ? this.settings.stickers : [];
+  }
+
+  addSticker(sticker) {
+    const safe = sticker && typeof sticker === "object" ? sticker : {};
+    const normalized = {
+      id: String(safe.id || `sticker-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+      src: String(safe.src || ""),
+      x: Number.isFinite(safe.x) ? Number(safe.x) : 0.5,
+      y: Number.isFinite(safe.y) ? Number(safe.y) : 0.6,
+      size: Number.isFinite(safe.size) ? Number(safe.size) : 140,
+      addedAt: Number(safe.addedAt || Date.now())
+    };
+    if (!normalized.src) return null;
+    const next = [...this.getStickers(), normalized].slice(-40);
+    this.updateSettings({ stickers: next });
+    return normalized;
+  }
+
+  updateStickerPosition(id, x, y) {
+    const stickers = this.getStickers().map((s) => (s.id === id ? { ...s, x, y } : s));
+    this.updateSettings({ stickers });
+  }
+
+  updateStickerSize(id, size) {
+    const clamped = Math.max(40, Math.min(420, Number(size) || 140));
+    const stickers = this.getStickers().map((s) => (s.id === id ? { ...s, size: clamped } : s));
+    this.updateSettings({ stickers });
+  }
+
+  removeSticker(id) {
+    const stickers = this.getStickers().filter((s) => s.id !== id);
+    this.updateSettings({ stickers });
+  }
+
+  clearStickers() {
+    this.updateSettings({ stickers: [] });
+  }
+
+  addExternalAuthNotice(notice) {
+    const safeNotice = notice && typeof notice === "object" ? notice : {};
+    const normalized = {
+      id: String(safeNotice.id || `notice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+      at: Number(safeNotice.at || Date.now()),
+      noticeType: String(safeNotice.noticeType || "info"),
+      message: String(safeNotice.message || ""),
+      correlationId: String(safeNotice.correlationId || ""),
+      terminalReason: String(safeNotice.terminalReason || "")
+    };
+    this.externalAuthNotices = [...this.externalAuthNotices, normalized].slice(-5);
+    return normalized;
   }
 }
 

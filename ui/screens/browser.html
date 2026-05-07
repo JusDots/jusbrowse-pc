@@ -9,6 +9,7 @@
   <body>
     <section id="startScreen" class="start-screen">
       <video id="startWallpaperVideo" class="start-wallpaper-video" muted loop playsinline></video>
+      <div id="stickerLayer" class="sticker-layer"></div>
       <div class="hero">
         <div class="logo">
           <img src="../assets/app-logo.png" alt="JusBrowse logo" />
@@ -21,18 +22,20 @@
     <div id="bottomRevealZone" class="bottom-reveal-zone"></div>
 
     <section id="bottomPill" class="bottom-pill">
-      <button id="backBtn" class="pill-btn" title="Back">&#8592;</button>
-      <button id="forwardBtn" class="pill-btn" title="Forward">&#8594;</button>
-      <button id="homeBtn" class="pill-btn" title="Home">&#8962;</button>
+      <button id="backBtn" class="pill-btn" title="Back (Alt+Left)">&#8592;</button>
+      <button id="forwardBtn" class="pill-btn" title="Forward (Alt+Right)">&#8594;</button>
+      <button id="homeBtn" class="pill-btn" title="Home (Alt+Home)">&#8962;</button>
       <input id="urlInput" class="pill-input" placeholder="Search or type URL" />
-      <button id="goBtn" class="pill-btn primary" title="Go">&#10148;</button>
-      <button id="reloadBtn" class="pill-btn" title="Reload">&#10227;</button>
-      <button id="stopBtn" class="pill-btn" title="Stop">&#10005;</button>
-      <button id="incognitoBtn" class="pill-btn" title="New Incognito Tab">🕶</button>
+      <button id="goBtn" class="pill-btn primary" title="Go (Enter)">&#10148;</button>
+      <button id="reloadBtn" class="pill-btn" title="Reload (F5)">&#10227;</button>
+      <button id="stopBtn" class="pill-btn" title="Stop (Esc)">&#10005;</button>
+      <button id="adblockShieldBtn" class="pill-btn pill-shield" title="Toggle ad blocker">&#128737;</button>
+      <button id="incognitoBtn" class="pill-btn" title="New Incognito Tab (Ctrl+Shift+N)">🕶</button>
       <button id="settingsBtn" class="pill-btn" title="Settings">&#9881;</button>
     </section>
 
     <section id="tabsDock" class="tabs-dock">
+      <input id="tabSearchInput" class="tab-search-input" placeholder="Search tabs" title="Search open tabs" />
       <div id="tabsList" class="tabs-list"></div>
       <button id="newTabBtn" class="new-tab-btn" title="New tab">+</button>
       <button id="newIncognitoTabBtn" class="new-tab-btn" title="New incognito tab">🕶</button>
@@ -74,13 +77,31 @@
               <label for="homepageUrlInput">Custom start page URL</label>
               <input id="homepageUrlInput" type="text" placeholder="about:blank or https://example.com" />
             </div>
-            <div class="settings-row toggle-row">
+            <div class="settings-row">
+              <label>Address bar position</label>
+              <div id="pillPositionGroup" class="chip-group">
+                <button class="option-chip" data-pill-position="bottom">Bottom pill (floating)</button>
+                <button class="option-chip" data-pill-position="top">Top searchbar (Chrome style)</button>
+              </div>
+              <p class="settings-hint">When using the top searchbar, the address bar sits with the tabs and is always visible.</p>
+            </div>
+            <div class="settings-row toggle-row pill-bottom-only">
               <div>
                 <strong>Auto-hide bottom pill</strong>
                 <p>Hide controls while browsing and reveal when hovering near bottom or tab bar.</p>
               </div>
               <label class="switch">
                 <input id="autoHidePillToggle" type="checkbox" />
+                <span class="switch-track"></span>
+              </label>
+            </div>
+            <div class="settings-row toggle-row">
+              <div>
+                <strong>Show ad-block shield in address bar</strong>
+                <p>Quickly toggle the ad/tracker blocker from the pill or top searchbar.</p>
+              </div>
+              <label class="switch">
+                <input id="showAdblockShieldToggle" type="checkbox" />
                 <span class="switch-track"></span>
               </label>
             </div>
@@ -207,6 +228,15 @@
                 <input id="showStatusTagToggle" type="checkbox" />
                 <span class="switch-track"></span>
               </label>
+            </div>
+            <div class="settings-row">
+              <strong>Home page stickers</strong>
+              <p class="settings-hint">Add PNG or GIF stickers to decorate the start screen. Drag stickers on the home page to move them, scroll-wheel over a sticker (or use the sliders below) to resize, double-click to remove. Stickers only show on the home/start page.</p>
+              <div class="inline-actions">
+                <button id="addStickerBtn" class="settings-close">Add sticker (PNG/GIF/WEBP)</button>
+                <button id="clearStickersBtn" class="danger-btn">Remove all stickers</button>
+              </div>
+              <div id="stickerGallery" class="sticker-gallery"></div>
             </div>
           </section>
 
@@ -392,6 +422,11 @@
           <section id="section-browsing" class="settings-section">
             <h2>Browsing</h2>
             <div class="settings-row">
+              <strong>Recently closed tabs</strong>
+              <p class="settings-hint">Click an item to reopen that tab.</p>
+              <div id="recentlyClosedList" class="history-list"></div>
+            </div>
+            <div class="settings-row">
               <strong>Search and navigation history</strong>
               <p class="settings-hint">Recent searches and addresses typed in the pill.</p>
               <div id="historyList" class="history-list"></div>
@@ -421,7 +456,11 @@
             </p>
             <div class="settings-row">
               <label>Version</label>
-              <p id="aboutVersion" class="settings-hint">v1 Wire</p>
+              <p id="aboutVersion" class="settings-hint">V2.0.0 "Atlantis"</p>
+              <label>Chromium</label>
+              <p id="aboutChromium" class="settings-hint">-</p>
+              <label>Electron</label>
+              <p id="aboutElectron" class="settings-hint">-</p>
               <label>OS</label>
               <p id="aboutOs" class="settings-hint">-</p>
               <label>Kernel</label>
@@ -430,6 +469,25 @@
             <p class="settings-hint">
               Tip: type <code>chrome://settings</code> or <code>jusbrowse://settings</code> in the pill.
             </p>
+            <p class="settings-hint">
+              Shortcuts: <code>Ctrl+T</code> new tab, <code>Ctrl+W</code> close tab, <code>Ctrl+Shift+T</code> reopen closed tab, <code>Ctrl+Shift+F</code> tab search,
+              <code>Ctrl+Shift+N</code> new incognito window, <code>Ctrl+L</code>/<code>F6</code> focus address bar,
+              <code>F5</code>/<code>Ctrl+R</code> reload, <code>Ctrl+Shift+R</code>/<code>Ctrl+F5</code> hard reload,
+              <code>F11</code> fullscreen, <code>Ctrl+=</code>/<code>Ctrl+-</code>/<code>Ctrl+0</code> zoom in/out/reset,
+              <code>Alt+Home</code> home, <code>Alt+Left</code>/<code>Alt+Right</code> back/forward, <code>Esc</code> stop loading.
+            </p>
+            <div class="settings-row">
+              <label>Auth diagnostics</label>
+              <div class="inline-actions">
+                <button id="refreshAuthTraceBtn" class="settings-close">Refresh auth diagnostics</button>
+                <button id="copyDiagnosticsBtn" class="settings-close">Copy diagnostics JSON</button>
+              </div>
+              <p id="copyDiagnosticsStatus" class="settings-hint">Ready to export diagnostics JSON.</p>
+              <label>Legacy trace</label>
+              <pre id="authFlowTrace" class="trace-view">No legacy auth events captured yet.</pre>
+              <label>Path A diagnostics</label>
+              <pre id="pathAAuthTrace" class="trace-view">No Path A auth events captured yet.</pre>
+            </div>
           </section>
         </main>
       </div>
@@ -437,6 +495,9 @@
 
     <div id="progressTrack" class="progress-track"><div class="progress-bar"></div></div>
     <div id="statusText" class="status-tag">Ready</div>
+    <div id="adblockBadge" class="adblock-badge" title="Trackers and ads blocked this session" aria-live="polite">0 blocked</div>
+    <div id="externalAuthNoticeStack" class="external-auth-notice-stack" aria-live="polite" aria-atomic="false"></div>
+    <div id="passwordPromptStack" class="password-prompt-stack" aria-live="polite" aria-atomic="false"></div>
 
     <script src="../viewmodel/browserViewModel.js"></script>
     <script src="../components/topbar.js"></script>

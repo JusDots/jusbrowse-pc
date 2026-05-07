@@ -1,18 +1,35 @@
 {
   "name": "jusbrowse-desktop",
-  "version": "1.0.0",
-  "description": "JusBrowse Chromium desktop browser for Linux and Windows",
+  "version": "2.0.0",
+  "description": "JusBrowse V2.0.0 Atlantis - Chromium desktop browser for Linux and Windows",
   "main": "electron/main.js",
-  "author": "JusBrowse",
+  "author": {
+    "name": "JusBrowse",
+    "email": "support@jusbrowse.app"
+  },
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "dist:linux": "electron-builder --linux AppImage deb rpm",
-    "dist:win": "electron-builder --win nsis portable",
+    "start:linux-safe": "electron --no-sandbox --disable-setuid-sandbox .",
+    "test": "node --test JB_C/path-a/test/**/*.test.js",
+    "patha:check-cutover": "node JB_C/path-a/scripts/evaluate-cutover-diagnostics.js",
+    "patha:auto-check": "node JB_C/path-a/scripts/run-parity-auto-check.js",
+    "patha:manual-parity": "node JB_C/path-a/scripts/run-manual-parity-matrix.js",
+    "patha:staged-rollout": "node JB_C/path-a/scripts/run-staged-rollout-checks.js",
+    "patha:flagship-ready": "node JB_C/path-a/scripts/assess-flagship-readiness.js",
+    "patha:bundle-readiness": "node JB_C/path-a/scripts/generate-readiness-bundle.js",
+    "patha:rollout-checkpoint": "node JB_C/path-a/scripts/record-rollout-checkpoint.js",
+    "patha:ready-linux-win": "npm run patha:auto-check && npm run test && npm run patha:manual-parity && npm run patha:staged-rollout && npm run patha:bundle-readiness && npm run patha:flagship-ready",
+    "dist:linux": "electron-builder --linux deb pacman",
+    "dist:linux:deb": "electron-builder --linux deb",
+    "dist:linux:rpm": "electron-builder --linux rpm",
+    "dist:linux:arch": "electron-builder --linux pacman",
+    "dist:win": "electron-builder --win nsis",
+    "dist:all": "npm run dist:linux && npm run dist:win",
     "dist": "electron-builder"
   },
   "devDependencies": {
-    "electron": "^31.3.1",
+    "electron": "^41.5.0",
     "electron-builder": "^24.13.3"
   },
   "build": {
@@ -30,25 +47,66 @@
     },
     "linux": {
       "target": [
-        "AppImage",
         "deb",
-        "rpm"
+        "pacman"
       ],
-      "icon": "build/icons/icon.png",
+      "icon": "build/icons-multi",
       "category": "Network",
+      "maintainer": "JusBrowse <support@jusbrowse.app>",
+      "vendor": "JusBrowse",
+      "synopsis": "Privacy-first Chromium browser",
+      "description": "JusBrowse V2.0.0 \"Atlantis\" — privacy-first Chromium desktop browser.",
       "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0"
+      ]
+    },
+    "rpm": {
+      "depends": [
+        "libnotify",
+        "libXScrnSaver",
+        "libXtst",
+        "xdg-utils",
+        "at-spi2-core",
+        "libuuid",
+        "libsecret"
+      ]
+    },
+    "pacman": {
+      "depends": [
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libxss",
+        "libxtst",
+        "xdg-utils",
+        "at-spi2-core",
+        "libsecret"
+      ]
     },
     "win": {
       "target": [
-        "nsis",
-        "portable"
+        "nsis"
       ],
       "icon": "build/icons/icon.ico",
       "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "JusBrowse"
     }
   }
 }
