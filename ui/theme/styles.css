@@ -182,8 +182,28 @@ body.has-wallpaper .start-screen::before {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 26px;
+  /* Generous hit area so the pill is easy to summon without being pixel-perfect. The
+     reveal zone sits below the tabs-dock z-index — when tabs are at bottom the dock
+     covers it, but the dock's own mouseenter handler reveals the pill, so the reveal
+     zone only carries the load when tabs are not at the bottom. */
+  height: 64px;
   z-index: 29;
+  pointer-events: none;
+}
+
+/* Re-enable pointer hit testing for the part of the reveal zone that is NOT covered
+   by the bottom tabs dock. When tabs are at the bottom, the dock owns hover detection. */
+body:not(.tabs-bottom) .bottom-reveal-zone {
+  pointer-events: auto;
+}
+
+/* The bottom pill renders in its own native BrowserView (see
+   electron/main.js: createPillView). In bottom-pill mode the in-chrome #bottomPill is
+   redundant and would either flash through the page transparency or interfere with
+   hover detection, so we hide it. Pill-top mode still uses the in-chrome element
+   because it's permanently affixed to the window top. */
+body.pill-bottom-mode .bottom-pill {
+  display: none !important;
 }
 
 .bottom-pill {
@@ -222,21 +242,17 @@ body.has-wallpaper .start-screen::before {
   opacity: 1;
 }
 
-/* Top searchbar mode: tabs row pinned to top, address bar sits below tabs, always visible. */
-body.pill-top .tabs-dock {
-  top: 0;
-  bottom: auto;
-  border-top: 0;
-  border-bottom: 1px solid var(--border);
-}
-
+/* Top searchbar mode. Pill is pinned to the top of the window as an always-visible
+   Chrome-style address row. Tabs position is independent — controlled by tabsPosition
+   only — so a user can mix "top pill + bottom tabs" or "top pill + left tabs" without
+   the pill stealing the tabs position. */
 body.pill-top .bottom-pill,
 body.pill-top .bottom-pill.visible,
 body.pill-top .bottom-pill.home-mode {
   position: fixed;
   left: 0;
   right: 0;
-  top: 42px;
+  top: 0;
   bottom: auto;
   width: 100%;
   min-height: 46px;
@@ -251,6 +267,23 @@ body.pill-top .bottom-pill.home-mode {
   backdrop-filter: blur(10px);
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
   padding: 6px 10px;
+}
+
+/* When tabs are also at the top, push the pill below the tabs row. */
+body.pill-top.tabs-top .bottom-pill,
+body.pill-top.tabs-top .bottom-pill.visible,
+body.pill-top.tabs-top .bottom-pill.home-mode {
+  top: 42px;
+}
+
+/* When tabs are on the left, leave room for the 272px sidebar so the pill doesn't
+   overlay the tabs dock. */
+body.pill-top.tabs-left .bottom-pill,
+body.pill-top.tabs-left .bottom-pill.visible,
+body.pill-top.tabs-left .bottom-pill.home-mode {
+  left: 272px;
+  right: 0;
+  width: auto;
 }
 
 body.pill-top .bottom-pill .pill-input {
@@ -461,11 +494,51 @@ body.adblock-shield-hidden #adblockShieldBtn {
   height: 42px;
   border-top: 1px solid var(--border);
   background: var(--glass);
-  z-index: 31;
+  /* z-index sits ABOVE the bottom-pill's hidden state and above start screen so the
+     tabs dock is always interactive in every mode (home, non-home, settings closed,
+     downloads open/close, pill-top, pill-bottom). The settings overlay (z-index 38)
+     and downloads panel (z-index 39) still intentionally float above the tabs. */
+  z-index: 33;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 0 8px;
+  visibility: visible;
+  opacity: 1;
+}
+
+/* Explicit anchor for bottom tabs — defensive against any sibling rule that tries to
+   pull the dock elsewhere. Keeps tabs reachable regardless of pill mode. */
+body.tabs-bottom .tabs-dock {
+  top: auto;
+  bottom: 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 0;
+}
+
+body.tabs-top .tabs-dock {
+  top: 0;
+  bottom: auto;
+  border-top: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+body.tabs-left .tabs-dock {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: auto;
+  width: 272px;
+  height: 100vh;
+  border-top: 0;
+  border-right: 1px solid var(--border);
+  border-left: 0;
+  border-bottom: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  align-content: stretch;
+  gap: 8px;
+  padding: 10px;
 }
 
 .tabs-list {
@@ -474,6 +547,13 @@ body.adblock-shield-hidden #adblockShieldBtn {
   gap: 6px;
   overflow-x: auto;
   flex: 1;
+}
+
+body.tabs-left .tabs-list {
+  flex-direction: column;
+  align-items: stretch;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .tab-search-input {
@@ -485,6 +565,10 @@ body.adblock-shield-hidden #adblockShieldBtn {
   color: var(--text);
   padding: 0 10px;
   font-size: 12px;
+}
+
+body.tabs-left .tab-search-input {
+  width: 100%;
 }
 
 .tab-search-input:focus {
@@ -506,6 +590,12 @@ body.adblock-shield-hidden #adblockShieldBtn {
   gap: 8px;
   padding: 0 8px;
   cursor: pointer;
+}
+
+body.tabs-left .tab-chip {
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
 }
 
 .tab-chip.active {
@@ -541,6 +631,96 @@ body.adblock-shield-hidden #adblockShieldBtn {
   background: var(--glass-2);
   color: var(--text);
   cursor: pointer;
+}
+
+body.tabs-left .new-tab-btn {
+  width: 100%;
+  min-width: 0;
+}
+
+.pill-btn.active {
+  border-color: rgba(95, 142, 255, 0.78);
+  background: rgba(95, 142, 255, 0.24);
+}
+
+/* The downloads panel renders in a dedicated native BrowserView (Chrome-style float
+   above the page; see electron/main.js: createDownloadsView). The in-chrome panel
+   stays in the DOM as the data source for renderDownloads() (used by the chrome's
+   own list rendering) but is never displayed. */
+.downloads-panel {
+  display: none !important;
+}
+
+.downloads-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.downloads-header .settings-close {
+  margin-top: 0;
+}
+
+.downloads-list {
+  display: grid;
+  gap: 10px;
+  overflow: auto;
+  max-height: calc(min(72vh, 700px) - 64px);
+  padding-right: 2px;
+}
+
+.download-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--glass);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.download-item-main {
+  display: grid;
+  gap: 2px;
+}
+
+.download-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.download-progress {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(36, 56, 92, 0.55);
+}
+
+.download-progress-fill {
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 120ms ease;
+}
+
+.download-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.download-actions .settings-close {
+  margin-top: 0;
 }
 
 .progress-track {

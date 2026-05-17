@@ -14,7 +14,9 @@ const https = require("https");
 
 const REMOTE_HOST_LISTS = [
   "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
-  "https://easylist.to/easylist/easylist.txt"
+  "https://easylist.to/easylist/easylist.txt",
+  "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/pro.txt",
+  "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt"
 ];
 const REMOTE_FETCH_TIMEOUT_MS = 8000;
 
@@ -51,7 +53,13 @@ const FALLBACK_TRACKER_HOSTS = [
   "mixpanel.com",
   "segment.io",
   "amplitude.com",
-  "fullstory.com"
+  "fullstory.com",
+  "ads-twitter.com",
+  "branch.io",
+  "unityads.unity3d.com",
+  "app-measurement.com",
+  "adjust.com",
+  "snapads.com"
 ];
 
 const PATH_TOKEN_BLOCKLIST = [
@@ -72,6 +80,18 @@ const PATH_TOKEN_BLOCKLIST = [
   "/telemetry",
   "doubleclick.net",
   "googlesyndication"
+];
+
+const CRITICAL_ALLOW_HOST_PATTERNS = [
+  "youtube.com",
+  "youtube-nocookie.com",
+  "googlevideo.com",
+  "ytimg.com",
+  "ggpht.com",
+  "googleapis.com",
+  "gstatic.com",
+  "googleusercontent.com",
+  "accounts.google.com"
 ];
 
 // Cosmetic ad-block sheet. Each ad selector is qualified with `:not(:has(video)):not(:has(audio))`
@@ -149,10 +169,30 @@ function parseHostsList(text) {
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#") || line.startsWith("!")) continue;
-    if (line.startsWith("[")) continue;
+    if (line.startsWith("@@")) continue;
     if (line.startsWith("||")) {
-      const stripped = line.slice(2).split(/[\^/$]/)[0].trim().toLowerCase();
-      if (stripped && stripped.includes(".") && !stripped.includes("*")) hosts.add(stripped);
+      const hostFromRule = line
+        .slice(2)
+        .split(/[\^/$|]/)[0]
+        .trim()
+        .toLowerCase();
+      if (hostFromRule && hostFromRule.includes(".") && !hostFromRule.includes("*")) {
+        hosts.add(hostFromRule);
+      }
+      continue;
+    }
+    if (line.startsWith("|https://") || line.startsWith("|http://")) {
+      try {
+        const hostFromAbsoluteRule = new URL(line.slice(1).split("$")[0]).hostname.toLowerCase();
+        if (hostFromAbsoluteRule.includes(".")) hosts.add(hostFromAbsoluteRule);
+      } catch {
+        // Ignore malformed absolute rules.
+      }
+      continue;
+    }
+    if (line.startsWith("[")) continue;
+    if (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(line)) {
+      hosts.add(line.toLowerCase());
       continue;
     }
     const tokens = line.split(/\s+/);
@@ -165,6 +205,16 @@ function parseHostsList(text) {
     hosts.add(host);
   }
   return hosts;
+}
+
+function matchesHostPattern(host, pattern) {
+  return host === pattern || host.endsWith(`.${pattern}`);
+}
+
+function isCriticalAllowHost(host) {
+  const lowerHost = String(host || "").toLowerCase();
+  if (!lowerHost) return false;
+  return CRITICAL_ALLOW_HOST_PATTERNS.some((pattern) => matchesHostPattern(lowerHost, pattern));
 }
 
 class AdblockManager {
@@ -229,6 +279,7 @@ class AdblockManager {
   matchHost(host) {
     if (!host) return false;
     const lower = String(host).toLowerCase();
+    if (isCriticalAllowHost(lower)) return false;
     if (this.hosts.has(lower)) return true;
     let idx = lower.indexOf(".");
     while (idx >= 0) {
@@ -248,6 +299,7 @@ class AdblockManager {
     } catch {
       host = "";
     }
+    if (isCriticalAllowHost(host)) return false;
     if (this.matchHost(host)) return true;
     const lowerUrl = url.toLowerCase();
     return this.pathTokens.some((token) => lowerUrl.includes(token));
@@ -276,10 +328,94 @@ class AdblockManager {
   }
 }
 
+// YouTube-specific cosmetic blocking. YouTube serves a lot of its "ads" as part of
+// its own player surface (featured product cards, suggested-action overlays, paid
+// promotion shelves, masthead ads, in-feed ad slots, channel companion cards). They
+// look like normal player DOM so the generic id*="ad" / class*="ad" selectors above
+// cannot safely hit them without risking the player itself. These selectors target
+// the well-known YouTube ad components by their stable element names.
+const YOUTUBE_AD_CSS = `
+ytd-ad-slot-renderer,
+ytd-display-ad-renderer,
+ytd-action-companion-ad-renderer,
+ytd-companion-slot-renderer,
+ytd-promoted-sparkles-web-renderer,
+ytd-promoted-sparkles-text-search-renderer,
+ytd-promoted-video-renderer,
+ytd-in-feed-ad-layout-renderer,
+ytd-banner-promo-renderer,
+ytd-statement-banner-renderer,
+ytd-merch-shelf-renderer,
+ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-ads"],
+#player-ads,
+#masthead-ad,
+ytd-rich-section-renderer:has(ytd-statement-banner-renderer),
+ytd-rich-item-renderer:has(ytd-ad-slot-renderer),
+.ytp-ad-overlay-container,
+.ytp-ad-text-overlay,
+.ytp-suggested-action,
+.ytp-featured-product-bar,
+.ytp-paid-content-overlay,
+.ytp-ce-element,
+.ytp-cards-button-shelf,
+.iv-branding,
+.ytd-merch-shelf-renderer {
+  display: none !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  pointer-events: none !important;
+}
+
+/* The pre-roll/mid-roll ad container is given visibility:hidden so the player keeps
+   advancing its clock and naturally moves past the ad break, while the auto-skip JS
+   handles the skip button when YouTube renders one. */
+.video-ads.ytp-ad-module {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+`;
+
+// Auto-skip helper for YouTube pre-roll/mid-roll ads. Runs every 400 ms; clicks the
+// skip-ad button as soon as YouTube renders it and seeks past any non-skippable ad
+// to the end of its duration so the user's playback resumes immediately.
+const YOUTUBE_AD_SKIP_JS = `
+(() => {
+  if (window.__jbYtAdSkipper) return;
+  window.__jbYtAdSkipper = true;
+  const skip = () => {
+    try {
+      const player = document.querySelector(".html5-video-player");
+      if (!player) return;
+      const isShowingAd = player.classList.contains("ad-showing") || player.classList.contains("ad-interrupting");
+      const skipBtn = document.querySelector(
+        ".ytp-ad-skip-button, .ytp-skip-ad-button, .ytp-ad-skip-button-modern"
+      );
+      if (skipBtn) {
+        skipBtn.click();
+        return;
+      }
+      if (isShowingAd) {
+        const video = player.querySelector("video");
+        if (video && Number.isFinite(video.duration) && video.duration > 0) {
+          try { video.currentTime = Math.max(0, video.duration - 0.05); } catch {}
+          try { video.muted = true; } catch {}
+        }
+      }
+    } catch {
+      // best-effort — keep ticking
+    }
+  };
+  setInterval(skip, 400);
+  document.addEventListener("visibilitychange", skip);
+})();
+`;
+
 module.exports = {
   AdblockManager,
   FALLBACK_TRACKER_HOSTS,
   PATH_TOKEN_BLOCKLIST,
   COSMETIC_CSS,
+  YOUTUBE_AD_CSS,
+  YOUTUBE_AD_SKIP_JS,
   parseHostsList
 };

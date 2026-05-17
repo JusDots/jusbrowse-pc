@@ -13,6 +13,7 @@ class BrowserViewModel {
     this.externalAuthNotices = [];
     this.passwordPrompts = [];
     this.adblockStats = { blockedCount: 0, hostCount: 0, source: "fallback", ready: false };
+    this.downloads = [];
     // Memoized wallpaper resolution: the renderer used to compose the data: URL on every
     // settings render which forced the PNG to re-decode through the cssparser. Cache it by
     // input so subsequent renders reuse the same string.
@@ -113,6 +114,7 @@ class BrowserViewModel {
       savePasswords: true,
       pillPosition: "bottom",
       showAdblockShield: true,
+      tabsPosition: "bottom",
       stickers: []
     };
 
@@ -207,6 +209,24 @@ class BrowserViewModel {
       source: String(stats.source || "fallback"),
       ready: Boolean(stats.ready)
     };
+  }
+
+  setDownloads(items) {
+    this.downloads = Array.isArray(items)
+      ? items.map((item) => ({
+          id: String(item?.id || ""),
+          fileName: String(item?.fileName || "Download"),
+          url: String(item?.url || ""),
+          targetPath: String(item?.targetPath || ""),
+          state: String(item?.state || "progressing"),
+          startedAt: Number(item?.startedAt || Date.now()),
+          endedAt: Number(item?.endedAt || 0),
+          totalBytes: Number(item?.totalBytes || 0),
+          receivedBytes: Number(item?.receivedBytes || 0),
+          percent: Number(item?.percent || 0),
+          canOpen: Boolean(item?.canOpen)
+        }))
+      : [];
   }
 
   getStickers() {

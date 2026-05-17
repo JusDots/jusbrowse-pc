@@ -1,7 +1,7 @@
 {
   "name": "jusbrowse-desktop",
-  "version": "2.0.0",
-  "description": "JusBrowse V2.0.0 Atlantis - Chromium desktop browser for Linux and Windows",
+  "version": "2.1.0",
+  "description": "JusBrowse V2.1.0 Atlantis - Chromium desktop browser for Linux and Windows",
   "main": "electron/main.js",
   "author": {
     "name": "JusBrowse",
@@ -40,6 +40,7 @@
     "files": [
       "electron/**/*",
       "ui/**/*",
+      "JB_C/path-a/src/**/*",
       "package.json"
     ],
     "directories": {
@@ -55,7 +56,7 @@
       "maintainer": "JusBrowse <support@jusbrowse.app>",
       "vendor": "JusBrowse",
       "synopsis": "Privacy-first Chromium browser",
-      "description": "JusBrowse V2.0.0 \"Atlantis\" — privacy-first Chromium desktop browser.",
+      "description": "JusBrowse V2.1.0 \"Atlantis\" — privacy-first Chromium desktop browser.",
       "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
     },
     "deb": {

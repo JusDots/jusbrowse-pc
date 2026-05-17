@@ -20,7 +20,16 @@ const { ElectronAuthFlowBridge } = require("../JB_C/path-a/src/adapters/electron
 const { resolveProviderPolicy } = require("../JB_C/path-a/src/compatibility/providerCompatibilityPolicy");
 const { MAIN_WORLD_SPOOF_SCRIPT, CHROME_FULL, CHROME_MAJOR } = require("./mainWorldSpoof");
 const { BrowserContext } = require("./browserContext");
-const { AdblockManager } = require("./adblock");
+const { AdblockManager, YOUTUBE_AD_CSS, YOUTUBE_AD_SKIP_JS } = require("./adblock");
+const {
+  COMPATIBILITY_HOSTS: REQUEST_POLICY_COMPATIBILITY_HOSTS,
+  TRACKER_HOST_PATTERNS: REQUEST_POLICY_TRACKER_HOSTS,
+  TRACKER_URL_KEYWORDS: REQUEST_POLICY_TRACKER_KEYWORDS,
+  isCompatibilityHost: policyIsCompatibilityHost,
+  isSignInCriticalHost: policyIsSignInCriticalHost,
+  isTrackerUrl: policyIsTrackerUrl,
+  shouldBypassAdblockForRequest
+} = require("./requestPolicy");
 
 const DEFAULT_HOME = "about:blank";
 
@@ -48,7 +57,7 @@ app.userAgentFallback =
   `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
 
 let mainWindow = null;
-let chromeLayout = { top: 0, bottom: 0, hideWebView: true };
+let chromeLayout = { top: 0, bottom: 0, left: 0, right: 0, hideWebView: true };
 let tabCounter = 0;
 let activeTabId = null;
 const tabs = new Map();
@@ -63,64 +72,10 @@ const tabIdToContext = new Map();
 let primaryWindowRef = null;
 const DEFAULT_USER_AGENT =
   `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
-const APP_VERSION_LABEL = "V2.0.0 \"Atlantis\"";
-const COMPATIBILITY_HOSTS = [
-  "whatsapp.com",
-  "web.whatsapp.com",
-  "accounts.google.com",
-  "google.com",
-  "youtube.com",
-  "youtu.be",
-  "gstatic.com",
-  "googleapis.com",
-  "googleusercontent.com"
-];
-const TRACKER_HOST_PATTERNS = [
-  "doubleclick.net",
-  "googlesyndication.com",
-  "adservice.google.com",
-  "adnxs.com",
-  "facebook.net",
-  "google-analytics.com",
-  "googletagmanager.com",
-  "taboola.com",
-  "outbrain.com",
-  "criteo.com",
-  "scorecardresearch.com",
-  "quantserve.com",
-  "amazon-adsystem.com",
-  "moatads.com",
-  "rubiconproject.com",
-  "openx.net",
-  "pubmatic.com",
-  "yahoo.com/p.gif",
-  "yieldmo.com",
-  "casalemedia.com",
-  "indexww.com",
-  "smartadserver.com",
-  "33across.com",
-  "media.net",
-  "adform.net",
-  "bidswitch.net",
-  "spotxchange.com",
-  "demdex.net",
-  "everesttech.net",
-  "hotjar.com",
-  "mixpanel.com",
-  "segment.io",
-  "amplitude.com",
-  "fullstory.com"
-];
-const TRACKER_URL_KEYWORDS = [
-  "/ads/",
-  "adservice",
-  "analytics",
-  "tracking",
-  "tracker",
-  "pixel",
-  "beacon",
-  "sponsor"
-];
+const APP_VERSION_LABEL = "V2.1.0 \"Atlantis\"";
+const COMPATIBILITY_HOSTS = REQUEST_POLICY_COMPATIBILITY_HOSTS;
+const TRACKER_HOST_PATTERNS = REQUEST_POLICY_TRACKER_HOSTS;
+const TRACKER_URL_KEYWORDS = REQUEST_POLICY_TRACKER_KEYWORDS;
 const COOKIE_BANNER_CSS = `
 #onetrust-banner-sdk, .onetrust-pc-dark-filter, #cookie-law-info-bar, #cookie-consent, .cookie-consent,
 [id*="cookie-banner"], [class*="cookie-banner"], [id*="consent-banner"], [class*="consent-banner"],
@@ -168,6 +123,9 @@ const usernameHintByHost = new Map();
 const USERNAME_HINT_TTL_MS = 5 * 60 * 1000;
 const adblockManager = new AdblockManager();
 const pendingDownloadScans = new WeakSet();
+const activeDownloads = new Map();
+const completedDownloads = [];
+const MAX_DOWNLOAD_HISTORY = 80;
 let idleSweepTimer = null;
 const popupAttemptGuard = new Map();
 const legacyAuthFlowByTabId = new Map();
@@ -838,30 +796,15 @@ function captureCredentialsFromFields(url, fields = {}, isIncognito = false, own
 }
 
 function isTrackerUrl(url) {
-  const normalized = String(url || "").toLowerCase();
-  const host = (() => {
-    try {
-      return new URL(normalized).hostname;
-    } catch {
-      return "";
-    }
-  })();
-  return (
-    TRACKER_HOST_PATTERNS.some((token) => host === token || host.endsWith(`.${token}`)) ||
-    TRACKER_URL_KEYWORDS.some((token) => normalized.includes(token))
-  );
+  return policyIsTrackerUrl(url);
 }
 
 function isCompatibilityHost(url) {
-  const host = (() => {
-    try {
-      return new URL(url).hostname.toLowerCase();
-    } catch {
-      return "";
-    }
-  })();
-  if (!host) return false;
-  return COMPATIBILITY_HOSTS.some((entry) => host === entry || host.endsWith(`.${entry}`));
+  return policyIsCompatibilityHost(url);
+}
+
+function isSignInCriticalHost(url) {
+  return policyIsSignInCriticalHost(url);
 }
 
 function isCompatibilityTab(tab) {
@@ -872,13 +815,109 @@ function isCompatibilityTab(tab) {
 
 function isLikelyAdResource(url, resourceType) {
   const normalized = String(url || "").toLowerCase();
-  const adLikeResource = ["script", "image", "xhr", "fetch", "subFrame"].includes(resourceType);
+  const adLikeResource = ["script", "image", "xhr", "fetch", "subFrame", "stylesheet", "other"].includes(resourceType);
   if (!adLikeResource) return false;
+  if (normalized.includes(".mp4") || normalized.includes(".webm") || normalized.includes(".m3u8")) {
+    return false;
+  }
   return (
     normalized.includes("/ad") ||
     normalized.includes("banner") ||
     normalized.includes("sponsor") ||
-    normalized.includes("promo")
+    normalized.includes("promo") ||
+    normalized.includes("doubleclick") ||
+    normalized.includes("adservice") ||
+    normalized.includes("utm_source=ad") ||
+    normalized.includes("/prebid") ||
+    normalized.includes("googlesyndication")
+  );
+}
+
+function isYouTubeHost(rawUrl = "") {
+  try {
+    const host = new URL(String(rawUrl || "")).hostname.toLowerCase();
+    return host === "youtube.com" || host.endsWith(".youtube.com") || host === "youtu.be";
+  } catch {
+    return false;
+  }
+}
+
+function isYouTubeRelatedHost(rawUrl = "") {
+  try {
+    const host = new URL(String(rawUrl || "")).hostname.toLowerCase();
+    return (
+      host === "youtube.com" ||
+      host.endsWith(".youtube.com") ||
+      host === "youtu.be" ||
+      host === "youtube-nocookie.com" ||
+      host.endsWith(".youtube-nocookie.com") ||
+      host === "googlevideo.com" ||
+      host.endsWith(".googlevideo.com") ||
+      host === "ytimg.com" ||
+      host.endsWith(".ytimg.com") ||
+      host === "ggpht.com" ||
+      host.endsWith(".ggpht.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isYouTubeCriticalSupportingHost(rawUrl = "") {
+  try {
+    const host = new URL(String(rawUrl || "")).hostname.toLowerCase();
+    return (
+      host === "googleapis.com" ||
+      host.endsWith(".googleapis.com") ||
+      host === "gstatic.com" ||
+      host.endsWith(".gstatic.com") ||
+      host === "googleusercontent.com" ||
+      host.endsWith(".googleusercontent.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isYouTubeCriticalRequest(url, tab = null) {
+  if (isYouTubeRelatedHost(url)) return true;
+  const activeUrl = tab?.url || tab?.view?.webContents?.getURL?.() || "";
+  if (!isYouTubeHost(activeUrl)) return false;
+  return isYouTubeCriticalSupportingHost(url);
+}
+
+function isLikelyYouTubeAdRequest(url, resourceType = "", tab = null) {
+  const type = String(resourceType || "");
+  if (!["xhr", "fetch", "script", "image", "subFrame", "other"].includes(type)) return false;
+  const normalized = String(url || "").toLowerCase();
+  const parsed = (() => {
+    try {
+      return new URL(String(url || ""));
+    } catch {
+      return null;
+    }
+  })();
+  const host = String(parsed?.hostname || "").toLowerCase();
+  const pathName = String(parsed?.pathname || "").toLowerCase();
+  const query = String(parsed?.search || "").toLowerCase();
+  const onYouTubeTab = isYouTubeHost(tab?.url || tab?.view?.webContents?.getURL?.() || "");
+  if (!onYouTubeTab && !isYouTubeRelatedHost(url)) return false;
+  if (
+    host === "doubleclick.net" ||
+    host.endsWith(".doubleclick.net") ||
+    host === "googlesyndication.com" ||
+    host.endsWith(".googlesyndication.com") ||
+    host === "adservice.google.com" ||
+    host.endsWith(".adservice.google.com")
+  ) {
+    return true;
+  }
+  return (
+    pathName.includes("/pagead/") ||
+    pathName.includes("/api/stats/ads") ||
+    pathName.includes("/get_midroll_info") ||
+    pathName.includes("/youtubei/v1/player/ad_break") ||
+    (pathName.includes("/youtubei/v1/log_event") && query.includes("ctier=l"))
   );
 }
 
@@ -1263,18 +1302,443 @@ function setViewBounds() {
   const hideWebView = Boolean(chromeLayout.hideWebView);
   if (hideWebView) {
     activeTab.view.setBounds({ x: 0, y: 0, width: 1, height: 1 });
+    applyPillBounds(mainWindow, mainPillView, mainPillState);
     return;
   }
 
   const topInset = Math.max(0, Number(chromeLayout.top) || 0);
   const bottomInset = Math.max(0, Number(chromeLayout.bottom) || 0);
-  const availableHeight = Math.max(height - topInset - bottomInset, 120);
+  const leftInset = Math.max(0, Number(chromeLayout.left) || 0);
+  const rightInset = Math.max(0, Number(chromeLayout.right) || 0);
+  const availableWidth = Math.max(width - leftInset - rightInset, 1);
+  const availableHeight = Math.max(height - topInset - bottomInset, 1);
   activeTab.view.setBounds({
-    x: 0,
+    x: leftInset,
     y: topInset,
-    width,
+    width: availableWidth,
     height: availableHeight
   });
+  applyPillBounds(mainWindow, mainPillView, mainPillState);
+}
+
+// --- Pill BrowserView -------------------------------------------------------------------
+//
+// The bottom pill lives in its OWN native child BrowserView, layered above the page
+// BrowserView. This is the only way an Electron renderer DOM can stay visually above
+// a sibling BrowserView (z-index in the chrome HTML has no effect against a native
+// view). The pill view's bounds are a small rectangle near the bottom of the window;
+// when the pill is hidden by auto-hide, the view is collapsed off-screen so it
+// neither paints nor captures mouse events. The page view always keeps its full
+// bounds — toggling the pill never resizes the page.
+
+const PILL_VIEW_HEIGHT = 76;          // rendered pill bubble height including outer padding
+const PILL_VIEW_BOTTOM_GUTTER = 8;    // gap between pill and window bottom edge
+const PILL_VIEW_SIDE_GUTTER = 12;     // gap between pill and window left/right edges
+const PILL_VIEW_MAX_WIDTH = 1000;
+const PILL_HIDE_DEBOUNCE_MS = 220;    // how long after hover end we wait before hiding
+const PILL_FADE_OUT_MS = 240;         // duration of the bounds slide animation
+const TABS_DOCK_HEIGHT_PX = 42;       // matches layoutDecisions.TABS_DOCK_HEIGHT
+
+let mainPillView = null;
+const mainPillState = createInitialPillState();
+
+function createInitialPillState() {
+  return {
+    chromeWantsVisible: false,
+    pillHovered: false,
+    pillPosition: "bottom",
+    tabsPosition: "bottom",
+    isSettingsOpen: false,
+    isHome: true,
+    isDownloadsOpen: false,
+    autoHidePill: true,
+    snapshot: null,
+    hideTimer: null,
+    // Animation bookkeeping: we slide the BrowserView's y position from below the
+    // window up into the visible rect (and back down to hide). lastY remembers the
+    // most recent y so re-show during a hide animation continues smoothly, and
+    // slideTimer holds the active per-frame interval.
+    lastY: null,
+    slideTimer: null
+  };
+}
+
+function createPillView({ incognito = false } = {}) {
+  const view = new BrowserView({
+    webPreferences: {
+      preload: path.join(__dirname, "pillViewPreload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+      spellcheck: false,
+      additionalArguments: incognito ? ["--jb-incognito"] : []
+    }
+  });
+  // Pill paints over the page BrowserView; setBackgroundColor to fully-transparent
+  // alpha so the rounded corners and padding around the pill bubble reveal the page.
+  try {
+    view.setBackgroundColor("#00000000");
+  } catch {
+    // Older Electron builds may reject the alpha syntax; the pill still renders, it
+    // just gets a solid backdrop. Visual-only fallback, not a functional regression.
+  }
+  view.webContents.loadFile(path.join(__dirname, "..", "ui", "screens", "pillView.html"));
+  return view;
+}
+
+function isPillEligible(state) {
+  if (!state) return false;
+  if (state.isSettingsOpen) return false;
+  if (state.pillPosition === "top") return false;
+  return true;
+}
+
+function pillIsVisuallyVisible(state) {
+  if (!isPillEligible(state)) return false;
+  if (state.isHome) return true;
+  if (state.pillHovered) return true;
+  return Boolean(state.chromeWantsVisible);
+}
+
+function computePillBounds(window, state) {
+  if (!window || window.isDestroyed()) return { x: 0, y: 0, width: 1, height: 1 };
+  const [width, height] = window.getContentSize();
+  const usableWidth = Math.max(0, width - PILL_VIEW_SIDE_GUTTER * 2);
+  const pillWidth = Math.min(PILL_VIEW_MAX_WIDTH, usableWidth);
+  if (pillWidth <= 0) return { x: 0, y: 0, width: 1, height: 1 };
+  const x = Math.max(PILL_VIEW_SIDE_GUTTER, Math.round((width - pillWidth) / 2));
+  // When tabs sit at the bottom, the dock owns the bottom 42 px. Park the pill
+  // above the dock so the pill never paints over the tabs (otherwise the user can't
+  // see or click the tabs while the pill is visible).
+  const tabsBottomReserve = state?.tabsPosition === "bottom" ? TABS_DOCK_HEIGHT_PX : 0;
+  const y = Math.max(0, height - PILL_VIEW_HEIGHT - PILL_VIEW_BOTTOM_GUTTER - tabsBottomReserve);
+  return { x, y, width: pillWidth, height: PILL_VIEW_HEIGHT };
+}
+
+const PILL_OFFSCREEN_BOUNDS = { x: -4, y: -4, width: 1, height: 1 };
+
+// Drives the BrowserView bounds with a slide-from-bottom animation. The pill view
+// is always fully opaque when its bounds are within the window — we animate the
+// view's Y position upward to bring it into the visible area and downward to push
+// it back off-screen. This avoids relying on per-view alpha compositing (patchy on
+// Linux without a compositor) and still gives a smooth appear/disappear.
+function applyPillBounds(window, view, state) {
+  if (!view || !window || window.isDestroyed() || !state) return;
+  const visible = pillIsVisuallyVisible(state);
+  const target = computePillBounds(window, state);
+  const [, contentHeight] = window.getContentSize();
+  const offscreenY = contentHeight + 12;
+  // When we want it visible: slide up from (offscreenY) to target.y. When hiding:
+  // slide down from current y back below the window edge. setBounds at ~60fps is
+  // cheap enough — BrowserView handles bounds changes in native code.
+  if (visible) {
+    animatePillSlide(view, state, {
+      x: target.x,
+      width: target.width,
+      height: target.height,
+      fromY: state.lastY != null ? state.lastY : offscreenY,
+      toY: target.y
+    });
+    return;
+  }
+  // Hide path: skip animation if already off-screen.
+  if (state.lastY === offscreenY) {
+    try { view.setBounds(PILL_OFFSCREEN_BOUNDS); } catch { /* ignore */ }
+    return;
+  }
+  animatePillSlide(view, state, {
+    x: target.x,
+    width: target.width,
+    height: target.height,
+    fromY: state.lastY != null ? state.lastY : target.y,
+    toY: offscreenY,
+    onDone: () => {
+      // After the slide-out completes, collapse the bounds to a 1x1 off-screen rect
+      // so the view neither paints nor captures mouse events.
+      if (!pillIsVisuallyVisible(state) && view && !view.webContents.isDestroyed()) {
+        try { view.setBounds(PILL_OFFSCREEN_BOUNDS); } catch { /* ignore */ }
+      }
+    }
+  });
+}
+
+function animatePillSlide(view, state, { x, width, height, fromY, toY, onDone }) {
+  if (!view || view.webContents.isDestroyed()) return;
+  if (state.slideTimer) {
+    clearInterval(state.slideTimer);
+    state.slideTimer = null;
+  }
+  const duration = PILL_FADE_OUT_MS;
+  const startedAt = Date.now();
+  const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+  // Apply the starting frame synchronously so a re-show during fade-out doesn't
+  // visually flicker — the view is already positioned at fromY.
+  try {
+    view.setBounds({ x, y: Math.round(fromY), width, height });
+  } catch {
+    // view torn down between scheduling and apply
+    return;
+  }
+  state.lastY = fromY;
+  const tick = () => {
+    if (view.webContents.isDestroyed()) {
+      if (state.slideTimer) clearInterval(state.slideTimer);
+      state.slideTimer = null;
+      return;
+    }
+    const elapsed = Date.now() - startedAt;
+    const progress = Math.min(1, elapsed / duration);
+    const y = fromY + (toY - fromY) * easeOut(progress);
+    try {
+      view.setBounds({ x, y: Math.round(y), width, height });
+    } catch {
+      // ignore — view may be tearing down
+    }
+    state.lastY = y;
+    if (progress >= 1) {
+      clearInterval(state.slideTimer);
+      state.slideTimer = null;
+      state.lastY = toY;
+      if (typeof onDone === "function") onDone();
+    }
+  };
+  state.slideTimer = setInterval(tick, 16);
+}
+
+function liftPillToTop(window, view) {
+  if (!view || !window || window.isDestroyed()) return;
+  try {
+    if (typeof window.setTopBrowserView === "function") {
+      window.setTopBrowserView(view);
+      return;
+    }
+  } catch {
+    // fall through to remove/add fallback
+  }
+  try {
+    window.removeBrowserView(view);
+  } catch {
+    // ignore — re-add is the corrective step
+  }
+  try {
+    window.addBrowserView(view);
+  } catch {
+    // window may have been closed mid-call; nothing to do
+  }
+}
+
+function attachPillView(window, view, state) {
+  if (!window || window.isDestroyed() || !view) return;
+  window.addBrowserView(view);
+  view.setBounds(PILL_OFFSCREEN_BOUNDS);
+  // Whenever the renderer (re)loads, re-sync bounds + push the last snapshot so the
+  // URL bar, nav buttons, theme, etc. are populated. lastY is reset so the next
+  // slide animation starts from off-screen for a clean entrance.
+  if (state) {
+    view.webContents.on("did-finish-load", () => {
+      state.lastY = null;
+      applyPillBounds(window, view, state);
+      if (state.snapshot) sendPillSnapshot(view, state.snapshot);
+    });
+  }
+}
+
+function sendPillSnapshot(view, snapshot) {
+  if (!view || !snapshot) return;
+  const wc = view.webContents;
+  if (!wc || wc.isDestroyed()) return;
+  try {
+    wc.send("pill:snapshot", snapshot);
+  } catch {
+    // ignore transient send failures (view tearing down)
+  }
+}
+
+function buildPillSnapshot(state, snapshotPatch = {}) {
+  const base = state.snapshot || {
+    url: "",
+    isHome: true,
+    isLoading: false,
+    canGoBack: false,
+    canGoForward: false,
+    blockTrackers: Boolean(runtimeSettings.blockTrackers),
+    isDownloadsOpen: false,
+    pillPosition: state.pillPosition,
+    theme: null
+  };
+  return {
+    ...base,
+    ...snapshotPatch,
+    blockTrackers: Boolean(runtimeSettings.blockTrackers),
+    pillPosition: state.pillPosition,
+    isDownloadsOpen: state.isDownloadsOpen
+  };
+}
+
+function refreshPillForState({ window, view, state }) {
+  if (!view) return;
+  applyPillBounds(window, view, state);
+}
+
+function broadcastPillSnapshot({ view, state, patch }) {
+  if (!view) return;
+  state.snapshot = buildPillSnapshot(state, patch);
+  sendPillSnapshot(view, state.snapshot);
+}
+
+// --- Downloads popover BrowserView ----------------------------------------------------
+//
+// The downloads list now floats on top of the page (Chrome-style) instead of
+// reserving a right-side inset that pushes the page. It lives in its own native
+// child BrowserView, sized to a small anchored card in the top-right corner of the
+// window. Visibility is driven by the chrome's `isDownloadsOpen` state forwarded via
+// the pill IPC, so the downloads button and the popover stay in lock-step.
+
+const DOWNLOADS_VIEW_WIDTH = 392;     // popover card width including outer padding
+const DOWNLOADS_VIEW_HEIGHT = 520;    // popover card max height including outer padding
+const DOWNLOADS_VIEW_TOP_GUTTER = 14; // gap between window top and popover card
+const DOWNLOADS_VIEW_SIDE_GUTTER = 14;
+
+let mainDownloadsView = null;
+let mainDownloadsTheme = null;
+
+function createDownloadsView({ incognito = false } = {}) {
+  const view = new BrowserView({
+    webPreferences: {
+      preload: path.join(__dirname, "downloadsViewPreload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+      spellcheck: false,
+      additionalArguments: incognito ? ["--jb-incognito"] : []
+    }
+  });
+  try {
+    view.setBackgroundColor("#00000000");
+  } catch {
+    // Visual-only fallback; same as the pill view.
+  }
+  view.webContents.loadFile(path.join(__dirname, "..", "ui", "screens", "downloadsView.html"));
+  return view;
+}
+
+function attachDownloadsView(window, view) {
+  if (!window || window.isDestroyed() || !view) return;
+  window.addBrowserView(view);
+  view.setBounds(PILL_OFFSCREEN_BOUNDS);
+}
+
+function computeDownloadsViewBounds(window) {
+  if (!window || window.isDestroyed()) return { x: 0, y: 0, width: 1, height: 1 };
+  const [width, height] = window.getContentSize();
+  const popoverWidth = Math.min(DOWNLOADS_VIEW_WIDTH, Math.max(280, width - DOWNLOADS_VIEW_SIDE_GUTTER * 2));
+  const popoverHeight = Math.min(
+    DOWNLOADS_VIEW_HEIGHT,
+    Math.max(220, height - DOWNLOADS_VIEW_TOP_GUTTER - 24)
+  );
+  const x = Math.max(DOWNLOADS_VIEW_SIDE_GUTTER, width - popoverWidth - DOWNLOADS_VIEW_SIDE_GUTTER);
+  const y = DOWNLOADS_VIEW_TOP_GUTTER;
+  return { x, y, width: popoverWidth, height: popoverHeight };
+}
+
+function applyDownloadsViewBounds(window, view, state) {
+  if (!view || !window || window.isDestroyed()) return;
+  // Hidden whenever the chrome no longer wants downloads open OR we're in a modal
+  // overlay state (settings/home — the page is already collapsed and the chrome owns
+  // the surface).
+  const wantOpen = Boolean(state?.isDownloadsOpen) && !state?.isSettingsOpen && !state?.isHome;
+  if (wantOpen) {
+    view.setBounds(computeDownloadsViewBounds(window));
+  } else {
+    view.setBounds(PILL_OFFSCREEN_BOUNDS);
+  }
+}
+
+function liftDownloadsViewToTop(window, view) {
+  if (!view || !window || window.isDestroyed()) return;
+  try {
+    if (typeof window.setTopBrowserView === "function") {
+      window.setTopBrowserView(view);
+      return;
+    }
+  } catch {
+    // fall through to remove/add fallback
+  }
+  try { window.removeBrowserView(view); } catch { /* ignore */ }
+  try { window.addBrowserView(view); } catch { /* ignore */ }
+}
+
+function sendDownloadsSnapshot(view, theme) {
+  if (!view || view.webContents.isDestroyed()) return;
+  try {
+    view.webContents.send("downloads-popover:snapshot", {
+      theme: theme || null,
+      items: serializeDownloads()
+    });
+  } catch {
+    // transient send failure during teardown — ignore
+  }
+}
+
+function sanitizeDownloadStatus(rawState = "") {
+  const safe = String(rawState || "").toLowerCase();
+  if (safe === "progressing" || safe === "interrupted" || safe === "completed" || safe === "cancelled") {
+    return safe;
+  }
+  return "progressing";
+}
+
+function toDownloadSnapshot(entry) {
+  const totalBytes = Math.max(0, Number(entry.totalBytes) || 0);
+  const receivedBytes = Math.max(0, Number(entry.receivedBytes) || 0);
+  const percent = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
+  return {
+    id: String(entry.id || ""),
+    fileName: String(entry.fileName || "Download"),
+    url: String(entry.url || ""),
+    targetPath: String(entry.targetPath || ""),
+    state: sanitizeDownloadStatus(entry.state),
+    startedAt: Number(entry.startedAt || Date.now()),
+    endedAt: Number(entry.endedAt || 0),
+    totalBytes,
+    receivedBytes,
+    percent,
+    canOpen: Boolean(entry.targetPath) && sanitizeDownloadStatus(entry.state) === "completed"
+  };
+}
+
+function publishDownloadsToAllWindows() {
+  const payload = serializeDownloads();
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send("downloads:updated", payload);
+    }
+  }
+  // Mirror the list to every popover BrowserView so the floating downloads card stays
+  // in sync with the chrome it shadows.
+  if (mainDownloadsView && !mainDownloadsView.webContents.isDestroyed()) {
+    try { mainDownloadsView.webContents.send("downloads-popover:items", payload); } catch { /* ignore */ }
+  }
+  for (const ctx of contextsByWindowId.values()) {
+    if (ctx?.downloadsView && !ctx.downloadsView.webContents.isDestroyed()) {
+      try { ctx.downloadsView.webContents.send("downloads-popover:items", payload); } catch { /* ignore */ }
+    }
+  }
+}
+
+function serializeDownloads() {
+  const active = Array.from(activeDownloads.values())
+    .map((entry) => toDownloadSnapshot(entry))
+    .sort((a, b) => b.startedAt - a.startedAt);
+  const history = completedDownloads.map((entry) => toDownloadSnapshot(entry));
+  return [...active, ...history].slice(0, MAX_DOWNLOAD_HISTORY);
+}
+
+function resolveDownloadById(id) {
+  const safeId = String(id || "");
+  if (!safeId) return null;
+  if (activeDownloads.has(safeId)) return activeDownloads.get(safeId);
+  return completedDownloads.find((entry) => entry.id === safeId) || null;
 }
 
 function serializeTabs() {
@@ -1304,18 +1768,36 @@ function publishState() {
     host = "";
   }
 
+  const isHome = !currentUrl || currentUrl === "about:blank";
   mainWindow.webContents.send("browser:state", {
     url: currentUrl,
     title: wc.getTitle() || "JusBrowse",
     host,
     isSecure: currentUrl.startsWith("https://"),
-    isHome: !currentUrl || currentUrl === "about:blank",
+    isHome,
     canGoBack: wc.navigationHistory.canGoBack(),
     canGoForward: wc.navigationHistory.canGoForward(),
     isLoading: wc.isLoading(),
     tabs: serializeTabs(),
     activeTabId
   });
+  // Mirror the pill-relevant slice to the pill BrowserView so it can render the
+  // current URL, navigation buttons, and loading state without re-asking via IPC.
+  if (mainPillView) {
+    mainPillState.isHome = isHome;
+    broadcastPillSnapshot({
+      view: mainPillView,
+      state: mainPillState,
+      patch: {
+        url: currentUrl,
+        isHome,
+        isLoading: wc.isLoading(),
+        canGoBack: wc.navigationHistory.canGoBack(),
+        canGoForward: wc.navigationHistory.canGoForward()
+      }
+    });
+    applyPillBounds(mainWindow, mainPillView, mainPillState);
+  }
 }
 
 function attachTabListeners(tab) {
@@ -1409,6 +1891,18 @@ function attachTabListeners(tab) {
     }
     if (runtimeSettings.advancedAdBlock) {
       wc.insertCSS(adblockManager.getCosmeticCss()).catch(() => {});
+    }
+    // YouTube-specific cosmetic blocking. The featured-product cards, suggested
+    // actions, and other "sponsored" overlays inside the player are served as part
+    // of YouTube's own DOM, so the generic ad-block CSS can't hit them safely; this
+    // sheet targets the stable element names directly. The auto-skip JS clicks
+    // YouTube's Skip-Ad button and seeks past non-skippable interstitials.
+    if (
+      (runtimeSettings.blockTrackers || runtimeSettings.advancedAdBlock) &&
+      isYouTubeHost(wc.getURL())
+    ) {
+      wc.insertCSS(YOUTUBE_AD_CSS).catch(() => {});
+      wc.executeJavaScript(YOUTUBE_AD_SKIP_JS, true).catch(() => {});
     }
     enforceCachePolicy();
   });
@@ -1595,12 +2089,34 @@ function attachSessionHooks(ses) {
     const { url = "", resourceType = "", uploadData = [], webContentsId } = details;
     const tab = wcIdToTab.get(webContentsId) || null;
     const ownerWc = tab?.view?.webContents || null;
-    const compatibilityContext = isCompatibilityHost(url) || isCompatibilityTab(tab);
     captureCredentialsFromRequest(url, uploadData, Boolean(tab?.incognito), ownerWc);
-    if (compatibilityContext) {
+
+    // Adblock bypass is narrowly scoped to the REQUEST URL: only requests that target
+    // a sign-in/auth host (accounts.google.com, apis.google.com, gstatic.com, ...) are
+    // exempted. The previous build also bypassed any request issued *from* a tab on
+    // google.com, which silently disabled tracker blocking on Google search and any
+    // other compat-hosted page. That regression is fixed here.
+    if (shouldBypassAdblockForRequest(url)) {
       callback({ cancel: false });
       return;
     }
+
+    // Explicit YouTube ad/break endpoints are blocked first, ahead of any keyword
+    // bypass — they must never leak through even though they're served from Google
+    // infrastructure.
+    if (runtimeSettings.blockTrackers && isLikelyYouTubeAdRequest(url, resourceType, tab)) {
+      adblockManager.incrementBlocked();
+      callback({ cancel: true });
+      return;
+    }
+    // YouTube pages rely on high-churn API/CDN endpoints whose URLs often contain
+    // generic "tracking"/"analytics" tokens. Keep those requests flowing, and only
+    // cancel the explicit YouTube ad endpoints above.
+    if (isYouTubeCriticalRequest(url, tab)) {
+      callback({ cancel: false });
+      return;
+    }
+
     if (runtimeSettings.httpsOnlyMode && url.startsWith("http://")) {
       callback({ redirectURL: `https://${url.slice("http://".length)}` });
       return;
@@ -1635,6 +2151,45 @@ function attachSessionHooks(ses) {
     callback({ responseHeaders });
   });
   ses.on("will-download", (_event, item) => {
+    const id = `dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const totalBytes = Number(item.getTotalBytes?.() || 0);
+    const initialEntry = {
+      id,
+      fileName: String(item.getFilename?.() || "Download"),
+      url: String(item.getURL?.() || ""),
+      targetPath: "",
+      state: "progressing",
+      startedAt: Date.now(),
+      endedAt: 0,
+      totalBytes,
+      receivedBytes: 0
+    };
+    activeDownloads.set(id, initialEntry);
+    publishDownloadsToAllWindows();
+    item.on("updated", (_updatedEvent, state) => {
+      const existing = activeDownloads.get(id);
+      if (!existing) return;
+      existing.receivedBytes = Number(item.getReceivedBytes?.() || existing.receivedBytes || 0);
+      existing.totalBytes = Number(item.getTotalBytes?.() || existing.totalBytes || 0);
+      existing.fileName = String(item.getFilename?.() || existing.fileName);
+      existing.state = state === "interrupted" ? "interrupted" : "progressing";
+      publishDownloadsToAllWindows();
+    });
+    item.once("done", (_doneEvent, state) => {
+      const existing = activeDownloads.get(id) || initialEntry;
+      existing.state = state === "completed" ? "completed" : state === "cancelled" ? "cancelled" : "interrupted";
+      existing.endedAt = Date.now();
+      existing.fileName = String(item.getFilename?.() || existing.fileName);
+      existing.targetPath = String(item.getSavePath?.() || "");
+      existing.receivedBytes = Number(item.getReceivedBytes?.() || existing.receivedBytes || 0);
+      existing.totalBytes = Number(item.getTotalBytes?.() || existing.totalBytes || 0);
+      activeDownloads.delete(id);
+      completedDownloads.unshift(existing);
+      if (completedDownloads.length > MAX_DOWNLOAD_HISTORY) {
+        completedDownloads.splice(MAX_DOWNLOAD_HISTORY);
+      }
+      publishDownloadsToAllWindows();
+    });
     handleVirusScanForDownload(item).catch(() => {});
   });
   attachedSessions.add(ses);
@@ -1739,6 +2294,7 @@ function scanWithKoodous(targetUrl, apiKey) {
 function setActiveTab(tabId) {
   const tab = tabs.get(tabId);
   if (!mainWindow || !tab) return false;
+  const previousId = activeTabId;
   activeTabId = tabId;
   tab.lastActiveAt = Date.now();
   if (tab.suspended) {
@@ -1749,7 +2305,25 @@ function setActiveTab(tabId) {
       // webContents may be destroyed.
     }
   }
-  mainWindow.setBrowserView(tab.view);
+  // Use add/remove rather than the legacy setBrowserView so the pill BrowserView
+  // (added once at window creation) can stay layered above the page view.
+  if (previousId && previousId !== tabId) {
+    const previousTab = tabs.get(previousId);
+    if (previousTab && previousTab.view !== tab.view) {
+      try {
+        mainWindow.removeBrowserView(previousTab.view);
+      } catch {
+        // previous view may already be detached
+      }
+    }
+  }
+  try {
+    mainWindow.addBrowserView(tab.view);
+  } catch {
+    // ignore — view may already be attached
+  }
+  liftPillToTop(mainWindow, mainPillView);
+  liftDownloadsViewToTop(mainWindow, mainDownloadsView);
   setViewBounds();
   syncAudioPolicy();
   publishState();
@@ -2016,11 +2590,42 @@ function createMainWindow() {
 
   mainWindow.loadFile(path.join(__dirname, "..", "ui", "screens", "browser.html"));
   primaryWindowRef = mainWindow;
+  // The pill and downloads-popover BrowserViews are created BEFORE the first tab so
+  // that when createTab calls setActiveTab, they end up on top of the freshly-attached
+  // page view.
+  mainPillView = createPillView({ incognito: false });
+  attachPillView(mainWindow, mainPillView, mainPillState);
+  mainDownloadsView = createDownloadsView({ incognito: false });
+  attachDownloadsView(mainWindow, mainDownloadsView);
   createTab({ url: DEFAULT_HOME, incognito: false }, true);
+  liftPillToTop(mainWindow, mainPillView);
+  liftDownloadsViewToTop(mainWindow, mainDownloadsView);
+  applyPillBounds(mainWindow, mainPillView, mainPillState);
+  applyDownloadsViewBounds(mainWindow, mainDownloadsView, mainPillState);
 
-  mainWindow.on("resize", setViewBounds);
+  mainWindow.on("resize", () => {
+    setViewBounds();
+    applyPillBounds(mainWindow, mainPillView, mainPillState);
+    applyDownloadsViewBounds(mainWindow, mainDownloadsView, mainPillState);
+  });
   mainWindow.on("closed", () => {
     finalizeAllLegacyFlows("window-closed");
+    if (mainPillState.hideTimer) {
+      clearTimeout(mainPillState.hideTimer);
+      mainPillState.hideTimer = null;
+    }
+    if (mainPillState.slideTimer) {
+      clearInterval(mainPillState.slideTimer);
+      mainPillState.slideTimer = null;
+    }
+    if (mainPillView) {
+      try { mainPillView.webContents.destroy(); } catch { /* already gone */ }
+      mainPillView = null;
+    }
+    if (mainDownloadsView) {
+      try { mainDownloadsView.webContents.destroy(); } catch { /* already gone */ }
+      mainDownloadsView = null;
+    }
     tabs.forEach((tab) => {
       wcIdToTab.delete(tab.view.webContents.id);
       tab.view.webContents.destroy();
@@ -2071,16 +2676,31 @@ function createIncognitoWindow(initialUrl = "about:blank") {
   contextsByWindowId.set(win.id, ctx);
   incognitoWindows.add(win);
   win.loadFile(path.join(__dirname, "..", "ui", "screens", "browser.html"));
+  ctx.pillView = createPillView({ incognito: true });
+  attachPillView(win, ctx.pillView, ctx.pillState);
+  ctx.downloadsView = createDownloadsView({ incognito: true });
+  attachDownloadsView(win, ctx.downloadsView);
   win.on("resize", () => {
     const activeTabId = ctx.activeTabId;
     const tab = activeTabId ? ctx.tabs.get(activeTabId) : null;
-    if (!tab) return;
-    const [width, height] = win.getContentSize();
-    const top = Math.max(0, Number(ctx.chromeLayout.top) || 0);
-    const bottom = Math.max(0, Number(ctx.chromeLayout.bottom) || 0);
-    const hide = Boolean(ctx.chromeLayout.hideWebView);
-    if (hide) tab.view.setBounds({ x: 0, y: 0, width: 1, height: 1 });
-    else tab.view.setBounds({ x: 0, y: top, width, height: Math.max(120, height - top - bottom) });
+    if (tab) {
+      const [width, height] = win.getContentSize();
+      const top = Math.max(0, Number(ctx.chromeLayout.top) || 0);
+      const bottom = Math.max(0, Number(ctx.chromeLayout.bottom) || 0);
+      const left = Math.max(0, Number(ctx.chromeLayout.left) || 0);
+      const right = Math.max(0, Number(ctx.chromeLayout.right) || 0);
+      const hide = Boolean(ctx.chromeLayout.hideWebView);
+      if (hide) tab.view.setBounds({ x: 0, y: 0, width: 1, height: 1 });
+      else
+        tab.view.setBounds({
+          x: left,
+          y: top,
+          width: Math.max(1, width - left - right),
+          height: Math.max(1, height - top - bottom)
+        });
+    }
+    applyPillBounds(win, ctx.pillView, ctx.pillState);
+    applyDownloadsViewBounds(win, ctx.downloadsView, ctx.pillState);
   });
   win.webContents.once("did-finish-load", () => {
     win.webContents.send("adblock:stats", adblockManager.getStats());
@@ -2093,6 +2713,22 @@ function createIncognitoWindow(initialUrl = "about:blank") {
   ctx.activeTabId = firstTabId;
   win.on("closed", () => {
     incognitoWindows.delete(win);
+    if (ctx.pillState?.hideTimer) {
+      clearTimeout(ctx.pillState.hideTimer);
+      ctx.pillState.hideTimer = null;
+    }
+    if (ctx.pillState?.slideTimer) {
+      clearInterval(ctx.pillState.slideTimer);
+      ctx.pillState.slideTimer = null;
+    }
+    if (ctx.pillView) {
+      try { ctx.pillView.webContents.destroy(); } catch { /* ignore */ }
+      ctx.pillView = null;
+    }
+    if (ctx.downloadsView) {
+      try { ctx.downloadsView.webContents.destroy(); } catch { /* ignore */ }
+      ctx.downloadsView = null;
+    }
     for (const tab of ctx.tabs.values()) {
       wcIdToTab.delete(tab.view.webContents.id);
       tabIdToContext.delete(tab.id);
@@ -2143,7 +2779,15 @@ function createIncognitoContextTab(ctx, initialUrl) {
   tabIdToContext.set(id, ctx);
   // Re-use the shared session hook (it will only attach once per session).
   attachSessionHooks(view.webContents.session);
-  ctx.window.setBrowserView(view);
+  // Replace setBrowserView (legacy single-view) with the additive API so the pill +
+  // downloads-popover views added at window creation stay layered above the page.
+  try {
+    ctx.window.addBrowserView(view);
+  } catch {
+    // ignore — already attached
+  }
+  liftPillToTop(ctx.window, ctx.pillView);
+  liftDownloadsViewToTop(ctx.window, ctx.downloadsView);
   view.setBounds({ x: 0, y: 0, width: 1, height: 1 });
   view.webContents.setUserAgent(buildUserAgent(initialUrl));
   view.webContents.loadURL(initialUrl || DEFAULT_HOME);
@@ -2161,6 +2805,13 @@ function createIncognitoContextTab(ctx, initialUrl) {
   wc.on("did-finish-load", () => {
     if (runtimeSettings.blockCookiePopups) wc.insertCSS(COOKIE_BANNER_CSS).catch(() => {});
     if (runtimeSettings.advancedAdBlock) wc.insertCSS(adblockManager.getCosmeticCss()).catch(() => {});
+    if (
+      (runtimeSettings.blockTrackers || runtimeSettings.advancedAdBlock) &&
+      isYouTubeHost(wc.getURL())
+    ) {
+      wc.insertCSS(YOUTUBE_AD_CSS).catch(() => {});
+      wc.executeJavaScript(YOUTUBE_AD_SKIP_JS, true).catch(() => {});
+    }
   });
   attachIncognitoTabRefreshListeners(ctx, tab);
   return id;
@@ -2373,6 +3024,8 @@ ipcMain.on("browser:set-layout", (event, layout) => {
   const nextLayout = {
     top: Number(layout.top) || 0,
     bottom: Number(layout.bottom) || 0,
+    left: Number(layout.left) || 0,
+    right: Number(layout.right) || 0,
     hideWebView: Boolean(layout.hideWebView)
   };
   if (route.kind === "incognito") {
@@ -2383,15 +3036,169 @@ ipcMain.on("browser:set-layout", (event, layout) => {
     if (nextLayout.hideWebView) tab.view.setBounds({ x: 0, y: 0, width: 1, height: 1 });
     else
       tab.view.setBounds({
-        x: 0,
+        x: nextLayout.left,
         y: nextLayout.top,
-        width,
-        height: Math.max(120, height - nextLayout.top - nextLayout.bottom)
+        width: Math.max(1, width - nextLayout.left - nextLayout.right),
+        height: Math.max(1, height - nextLayout.top - nextLayout.bottom)
       });
     return;
   }
   chromeLayout = nextLayout;
   setViewBounds();
+});
+
+// ---- Pill BrowserView IPC ---------------------------------------------------------
+//
+// The chrome (topbar.js) tells main whenever the pill should be visible or which
+// modal state we're in; the pill view tells main when it's being hovered (so main
+// can debounce hides while the user is interacting). Main applies the resulting
+// bounds to the pill BrowserView and forwards a fresh snapshot.
+
+function resolvePillContext(event) {
+  const route = ipcRouteForEvent(event);
+  if (route.kind === "incognito" && route.ctx) {
+    return {
+      window: route.ctx.window,
+      view: route.ctx.pillView || null,
+      state: route.ctx.pillState || null,
+      source: "incognito"
+    };
+  }
+  return { window: mainWindow, view: mainPillView, state: mainPillState, source: "main" };
+}
+
+function schedulePillHide(ctx) {
+  if (!ctx.state) return;
+  if (ctx.state.hideTimer) clearTimeout(ctx.state.hideTimer);
+  ctx.state.hideTimer = setTimeout(() => {
+    ctx.state.hideTimer = null;
+    refreshPillForState(ctx);
+  }, PILL_HIDE_DEBOUNCE_MS);
+}
+
+function cancelPillHide(state) {
+  if (!state || !state.hideTimer) return;
+  clearTimeout(state.hideTimer);
+  state.hideTimer = null;
+}
+
+function resolveDownloadsViewForRoute(ctx) {
+  if (ctx.source === "incognito") {
+    const browserCtx = contextsByWindowId.get(ctx.window?.id);
+    return browserCtx?.downloadsView || null;
+  }
+  return mainDownloadsView;
+}
+
+function getDownloadsTheme(ctx) {
+  if (ctx.source === "incognito") {
+    const browserCtx = contextsByWindowId.get(ctx.window?.id);
+    return browserCtx?.downloadsTheme || null;
+  }
+  return mainDownloadsTheme;
+}
+
+function applyDownloadsView(ctx) {
+  const view = resolveDownloadsViewForRoute(ctx);
+  if (!view) return;
+  applyDownloadsViewBounds(ctx.window, view, ctx.state);
+  // Whenever we make the popover visible we re-send a fresh snapshot so the popover
+  // shows the latest list/theme immediately rather than waiting for the next mutation.
+  const wantOpen = Boolean(ctx.state?.isDownloadsOpen) && !ctx.state?.isSettingsOpen && !ctx.state?.isHome;
+  if (wantOpen) sendDownloadsSnapshot(view, getDownloadsTheme(ctx));
+}
+
+ipcMain.on("pill:set-theme", (event, theme) => {
+  const ctx = resolvePillContext(event);
+  if (!ctx.view) return;
+  broadcastPillSnapshot({ view: ctx.view, state: ctx.state, patch: { theme: theme || null } });
+  // The downloads popover shares the chrome's theme — keep it visually in sync.
+  const downloadsView = resolveDownloadsViewForRoute(ctx);
+  if (ctx.source === "incognito") {
+    const browserCtx = contextsByWindowId.get(ctx.window?.id);
+    if (browserCtx) browserCtx.downloadsTheme = theme || null;
+  } else {
+    mainDownloadsTheme = theme || null;
+  }
+  if (downloadsView) sendDownloadsSnapshot(downloadsView, theme || null);
+});
+
+ipcMain.on("downloads-popover:close", (event) => {
+  const ctx = resolvePillContext(event);
+  if (!ctx.window || ctx.window.isDestroyed()) return;
+  // Mirror the close back to the chrome so its `isDownloadsOpen` state flips false
+  // and the downloads button visually deactivates.
+  ctx.window.webContents.send("pill:toggle-downloads");
+});
+
+ipcMain.on("pill:set-state", (event, payload) => {
+  if (!payload || typeof payload !== "object") return;
+  const ctx = resolvePillContext(event);
+  if (!ctx.state) return;
+  const next = {
+    chromeWantsVisible: Boolean(payload.chromeWantsVisible),
+    pillPosition: String(payload.pillPosition || "bottom"),
+    tabsPosition: String(payload.tabsPosition || "bottom"),
+    isSettingsOpen: Boolean(payload.isSettingsOpen),
+    isHome: Boolean(payload.isHome),
+    isDownloadsOpen: Boolean(payload.isDownloadsOpen),
+    autoHidePill: payload.autoHidePill !== false
+  };
+  Object.assign(ctx.state, next);
+  cancelPillHide(ctx.state);
+  refreshPillForState(ctx);
+  broadcastPillSnapshot({ view: ctx.view, state: ctx.state, patch: { isHome: next.isHome } });
+  // The downloads popover lives in its own BrowserView and is driven by the same
+  // chrome state — keep it in lock-step with the pill's view of the world.
+  applyDownloadsView(ctx);
+});
+
+ipcMain.on("pill:set-hovered", (event, hovered) => {
+  const ctx = resolvePillContext(event);
+  if (!ctx.state) return;
+  ctx.state.pillHovered = Boolean(hovered);
+  if (ctx.state.pillHovered) {
+    cancelPillHide(ctx.state);
+    refreshPillForState(ctx);
+  } else if (!ctx.state.chromeWantsVisible && !ctx.state.isHome) {
+    schedulePillHide(ctx);
+  } else {
+    refreshPillForState(ctx);
+  }
+});
+
+ipcMain.on("pill:request-go", (event, rawInput) => {
+  const ctx = resolvePillContext(event);
+  if (!ctx.window || ctx.window.isDestroyed()) return;
+  // The chrome owns smart URL/search resolution and history tracking. Re-emit
+  // here rather than calling browser:go directly so the pill's raw text goes
+  // through executeSearchOrGo just like typing into the in-chrome pill would.
+  ctx.window.webContents.send("pill:go", String(rawInput || ""));
+});
+
+ipcMain.on("pill:request-toggle-downloads", (event) => {
+  const ctx = resolvePillContext(event);
+  if (!ctx.window || ctx.window.isDestroyed()) return;
+  // Forward to the chrome which owns the downloads-panel UI and inset math.
+  ctx.window.webContents.send("pill:toggle-downloads");
+});
+
+ipcMain.on("pill:request-open-settings", (event) => {
+  const ctx = resolvePillContext(event);
+  if (!ctx.window || ctx.window.isDestroyed()) return;
+  ctx.window.webContents.send("pill:open-settings");
+});
+
+ipcMain.on("pill:request-new-incognito", () => {
+  createIncognitoWindow("about:blank");
+});
+
+ipcMain.on("pill:request-toggle-adblock", (event) => {
+  const ctx = resolvePillContext(event);
+  if (!ctx.window || ctx.window.isDestroyed()) return;
+  // Toggling the runtime setting through the chrome keeps settings/localStorage in
+  // sync; the chrome will then call settings:update-runtime which we already handle.
+  ctx.window.webContents.send("pill:toggle-adblock");
 });
 
 ipcMain.handle("settings:update-runtime", (_, settings) => {
@@ -2521,6 +3328,22 @@ ipcMain.handle("passwords:respond", (_event, payload) => {
 
 ipcMain.handle("adblock:get-stats", () => adblockManager.getStats());
 
+ipcMain.handle("downloads:list", () => serializeDownloads());
+
+ipcMain.handle("downloads:open", async (_event, downloadId) => {
+  const entry = resolveDownloadById(downloadId);
+  if (!entry?.targetPath) return false;
+  const status = await shell.openPath(String(entry.targetPath));
+  return status === "";
+});
+
+ipcMain.handle("downloads:open-folder", async (_event, downloadId) => {
+  const entry = resolveDownloadById(downloadId);
+  if (!entry?.targetPath) return false;
+  const status = await shell.showItemInFolder(String(entry.targetPath));
+  return status === "" || status === undefined;
+});
+
 function publishAdblockStatsToAllWindows() {
   const stats = adblockManager.getStats();
   for (const win of BrowserWindow.getAllWindows()) {
@@ -2568,12 +3391,13 @@ function publishStateForContext(ctx) {
       isActive: t.id === ctx.activeTabId,
       incognito: true
     }));
+  const isHome = !currentUrl || currentUrl === "about:blank";
   ctx.window.webContents.send("browser:state", {
     url: currentUrl,
     title: wc.getTitle() || "JusBrowse",
     host,
     isSecure: currentUrl.startsWith("https://"),
-    isHome: !currentUrl || currentUrl === "about:blank",
+    isHome,
     canGoBack: wc.navigationHistory.canGoBack(),
     canGoForward: wc.navigationHistory.canGoForward(),
     isLoading: wc.isLoading(),
@@ -2581,23 +3405,55 @@ function publishStateForContext(ctx) {
     activeTabId: ctx.activeTabId,
     incognito: true
   });
+  if (ctx.pillView) {
+    ctx.pillState.isHome = isHome;
+    broadcastPillSnapshot({
+      view: ctx.pillView,
+      state: ctx.pillState,
+      patch: {
+        url: currentUrl,
+        isHome,
+        isLoading: wc.isLoading(),
+        canGoBack: wc.navigationHistory.canGoBack(),
+        canGoForward: wc.navigationHistory.canGoForward()
+      }
+    });
+    applyPillBounds(ctx.window, ctx.pillView, ctx.pillState);
+  }
 }
 
 function setIncognitoActiveTab(ctx, tabId) {
   const tab = ctx.tabs.get(tabId);
   if (!ctx.window || !tab) return false;
+  const previousId = ctx.activeTabId;
   ctx.activeTabId = tabId;
   tab.lastActiveAt = Date.now();
-  ctx.window.setBrowserView(tab.view);
+  if (previousId && previousId !== tabId) {
+    const previous = ctx.tabs.get(previousId);
+    if (previous && previous.view !== tab.view) {
+      try { ctx.window.removeBrowserView(previous.view); } catch { /* ignore */ }
+    }
+  }
+  try { ctx.window.addBrowserView(tab.view); } catch { /* ignore */ }
+  liftPillToTop(ctx.window, ctx.pillView);
+  liftDownloadsViewToTop(ctx.window, ctx.downloadsView);
   const [width, height] = ctx.window.getContentSize();
   const top = Math.max(0, Number(ctx.chromeLayout.top) || 0);
   const bottom = Math.max(0, Number(ctx.chromeLayout.bottom) || 0);
+  const left = Math.max(0, Number(ctx.chromeLayout.left) || 0);
+  const right = Math.max(0, Number(ctx.chromeLayout.right) || 0);
   const hide = Boolean(ctx.chromeLayout.hideWebView);
   if (hide) {
     tab.view.setBounds({ x: 0, y: 0, width: 1, height: 1 });
   } else {
-    tab.view.setBounds({ x: 0, y: top, width, height: Math.max(120, height - top - bottom) });
+    tab.view.setBounds({
+      x: left,
+      y: top,
+      width: Math.max(1, width - left - right),
+      height: Math.max(1, height - top - bottom)
+    });
   }
+  applyPillBounds(ctx.window, ctx.pillView, ctx.pillState);
   publishStateForContext(ctx);
   return true;
 }

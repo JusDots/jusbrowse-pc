@@ -33,8 +33,35 @@ contextBridge.exposeInMainWorld("browserApi", {
   clearSavedPasswords: () => ipcRenderer.invoke("passwords:clear"),
   respondToPasswordPrompt: (id, action) => ipcRenderer.invoke("passwords:respond", { id, action }),
   getAdblockStats: () => ipcRenderer.invoke("adblock:get-stats"),
-  setLayout: (top, bottom, hideWebView = false) =>
-    ipcRenderer.send("browser:set-layout", { top, bottom, hideWebView }),
+  getDownloads: () => ipcRenderer.invoke("downloads:list"),
+  openDownload: (downloadId) => ipcRenderer.invoke("downloads:open", downloadId),
+  openDownloadFolder: (downloadId) => ipcRenderer.invoke("downloads:open-folder", downloadId),
+  setLayout: (top, bottom, left = 0, right = 0, hideWebView = false) =>
+    ipcRenderer.send("browser:set-layout", { top, bottom, left, right, hideWebView }),
+  // Notifies main of the current pill context so it can drive the pill BrowserView's
+  // bounds (visible rect vs collapsed-off-screen).
+  setPillState: (payload) => ipcRenderer.send("pill:set-state", payload),
+  setPillTheme: (theme) => ipcRenderer.send("pill:set-theme", theme),
+  onPillToggleDownloads: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("pill:toggle-downloads", handler);
+    return () => ipcRenderer.removeListener("pill:toggle-downloads", handler);
+  },
+  onPillOpenSettings: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("pill:open-settings", handler);
+    return () => ipcRenderer.removeListener("pill:open-settings", handler);
+  },
+  onPillToggleAdblock: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("pill:toggle-adblock", handler);
+    return () => ipcRenderer.removeListener("pill:toggle-adblock", handler);
+  },
+  onPillGo: (callback) => {
+    const handler = (_, raw) => callback(raw);
+    ipcRenderer.on("pill:go", handler);
+    return () => ipcRenderer.removeListener("pill:go", handler);
+  },
   onState: (callback) => {
     const handler = (_, state) => callback(state);
     ipcRenderer.on("browser:state", handler);
@@ -54,5 +81,10 @@ contextBridge.exposeInMainWorld("browserApi", {
     const handler = (_, payload) => callback(payload);
     ipcRenderer.on("adblock:stats", handler);
     return () => ipcRenderer.removeListener("adblock:stats", handler);
+  },
+  onDownloadsUpdated: (callback) => {
+    const handler = (_, payload) => callback(payload);
+    ipcRenderer.on("downloads:updated", handler);
+    return () => ipcRenderer.removeListener("downloads:updated", handler);
   }
 });

@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>JusBrowse Pill</title>
+    <link rel="stylesheet" href="../theme/styles.css" />
+    <style>
+      /* The pill BrowserView is layered above the page BrowserView at the OS level.
+         Its renderer needs a transparent background so the page shows through the
+         pill's rounded corners and any padding around the bubble. */
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: transparent !important;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+      body {
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        padding-bottom: 6px;
+      }
+      .pill-shell {
+        width: 100%;
+        max-width: 980px;
+        min-height: 60px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--glass-2);
+        backdrop-filter: blur(12px);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+        box-shadow: 0 14px 32px rgba(0, 0, 0, 0.32);
+        /* Appear/disappear is driven by the main process sliding the BrowserView's
+           bounds up from below the window edge — see electron/main.js. The pill is
+           always fully opaque when its view bounds are visible, so even if the
+           underlying compositor can't blend a transparent BrowserView (some Linux
+           setups), the pill still renders correctly. */
+        opacity: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <section id="pillShell" class="pill-shell">
+      <button id="backBtn" class="pill-btn" title="Back (Alt+Left)">&#8592;</button>
+      <button id="forwardBtn" class="pill-btn" title="Forward (Alt+Right)">&#8594;</button>
+      <button id="homeBtn" class="pill-btn" title="Home (Alt+Home)">&#8962;</button>
+      <input id="urlInput" class="pill-input" placeholder="Search Here" />
+      <button id="goBtn" class="pill-btn primary" title="Go (Enter)">&#10148;</button>
+      <button id="reloadBtn" class="pill-btn" title="Reload (F5)">&#10227;</button>
+      <button id="stopBtn" class="pill-btn" title="Stop (Esc)">&#10005;</button>
+      <button id="downloadsBtn" class="pill-btn" title="Downloads (Ctrl+J)">&#8681;</button>
+      <button id="adblockShieldBtn" class="pill-btn pill-shield" title="Toggle ad blocker">&#128737;</button>
+      <button id="incognitoBtn" class="pill-btn" title="New Incognito Tab (Ctrl+Shift+N)">🕶</button>
+      <button id="settingsBtn" class="pill-btn" title="Settings">&#9881;</button>
+    </section>
+    <script src="../components/pillView.js"></script>
+  </body>
+</html>

@@ -20,6 +20,8 @@
   const tabsList = $("tabsList");
   const tabSearchInput = $("tabSearchInput");
   const settingsPage = $("settingsPage");
+  const downloadsPanel = $("downloadsPanel");
+  const downloadsList = $("downloadsList");
   const settingsNavButtons = document.querySelectorAll(".settings-nav");
   const settingsSections = document.querySelectorAll(".settings-section");
   const historyList = $("historyList");
@@ -43,6 +45,7 @@
   const stickerLayer = $("stickerLayer");
   const stickerGallery = $("stickerGallery");
   const pillPositionGroup = $("pillPositionGroup");
+  const tabsPositionGroup = $("tabsPositionGroup");
 
   const controls = {
     backBtn: $("backBtn"),
@@ -50,6 +53,7 @@
     homeBtn: $("homeBtn"),
     reloadBtn: $("reloadBtn"),
     stopBtn: $("stopBtn"),
+    downloadsBtn: $("downloadsBtn"),
     goBtn: $("goBtn"),
     urlInput: $("urlInput"),
     settingsBtn: $("settingsBtn"),
@@ -60,6 +64,7 @@
     adblockShieldBtn: $("adblockShieldBtn"),
     addStickerBtn: $("addStickerBtn"),
     clearStickersBtn: $("clearStickersBtn"),
+    closeDownloadsBtn: $("closeDownloadsBtn"),
     openIncognitoFromSettingsBtn: $("openIncognitoFromSettingsBtn"),
     statusText: $("statusText"),
     progressTrack: $("progressTrack")
@@ -113,7 +118,8 @@
     clearHistoryBtn: $("clearHistoryBtn"),
     savePasswordsToggle: $("savePasswordsToggle"),
     clearPasswordsBtn: $("clearPasswordsBtn"),
-    showAdblockShieldToggle: $("showAdblockShieldToggle")
+    showAdblockShieldToggle: $("showAdblockShieldToggle"),
+    tabsPositionGroup
   };
 
   const themePresetGroup = $("themePresetGroup");
@@ -132,6 +138,7 @@
   };
 
   let isSettingsPageOpen = false;
+  let isDownloadsOpen = false;
   let activeSettingsSectionId = "section-general";
   let isUserEditingUrl = false;
   let tabSearchQuery = "";
@@ -139,8 +146,19 @@
   let progressTimer = null;
   let progressValue = 0;
   const activeNoticeTimers = new Map();
-  const TABS_DOCK_HEIGHT = 42;
-  const PILL_HEIGHT_WHEN_VISIBLE = 72;
+  // Shared layout-decision helpers live in ui/viewmodel/layoutDecisions.js so the same
+  // inset math is unit-tested in node and consumed here in the renderer.
+  const layoutDecisions = window.JusBrowseLayoutDecisions || {};
+  const TABS_DOCK_HEIGHT = layoutDecisions.TABS_DOCK_HEIGHT || 42;
+  const TOP_PILL_RESERVE = layoutDecisions.PILL_TOP_RESERVE || 46;
+
+  const formatBytes = (value) => {
+    const bytes = Math.max(0, Number(value) || 0);
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  };
 
   const updateRuntimeSettings = () => api.updateRuntimeSettings?.(vm.settings);
 
@@ -501,25 +519,134 @@
 
   const isPillVisible = () => bottomPill.classList.contains("visible") || bottomPill.classList.contains("home-mode");
   const isTopPillMode = () => vm.settings.pillPosition === "top";
-  const TOP_PILL_HEIGHT = 46;
+  const DOWNLOAD_PANEL_MARGIN = 12;
 
-  const syncLayout = () => {
-    if (vm.isHome || isSettingsPageOpen) {
-      api.setLayout(0, 0, true);
-      return;
-    }
-    if (isTopPillMode()) {
-      // Tabs row + searchbar both pinned to top, page sits below them.
-      api.setLayout(TABS_DOCK_HEIGHT + TOP_PILL_HEIGHT, 0, false);
-      return;
-    }
-    const bottomInset = TABS_DOCK_HEIGHT + (isPillVisible() ? PILL_HEIGHT_WHEN_VISIBLE : 0);
-    api.setLayout(0, bottomInset, false);
+  // The bottom pill renders in a dedicated native BrowserView layered above the page
+  // (see electron/main.js: createPillView). The local #bottomPill element is hidden
+  // via CSS while bottom-pill mode is active; it remains the rendering host only in
+  // top-pill mode. publishPillState forwards the renderer's "should the pill be
+  // visible" decision plus modal context to main so the pill view bounds track it.
+  let lastPillStateJson = "";
+  const publishPillState = () => {
+    if (!api?.setPillState) return;
+    const payload = {
+      chromeWantsVisible: isPillVisible(),
+      pillPosition: vm.settings.pillPosition || "bottom",
+      tabsPosition: vm.settings.tabsPosition || "bottom",
+      isSettingsOpen: Boolean(isSettingsPageOpen),
+      isHome: Boolean(vm.isHome),
+      isDownloadsOpen: Boolean(isDownloadsOpen),
+      autoHidePill: vm.settings.autoHidePill !== false
+    };
+    const serialized = JSON.stringify(payload);
+    if (serialized === lastPillStateJson) return;
+    lastPillStateJson = serialized;
+    api.setPillState(payload);
   };
 
+  const publishPillTheme = () => {
+    if (!api?.setPillTheme) return;
+    const computed = getComputedStyle(document.documentElement);
+    const pick = (token) => String(computed.getPropertyValue(token) || "").trim();
+    const themeClass = document.body.classList.contains("theme-purple")
+      ? "purple"
+      : document.body.classList.contains("theme-dark")
+      ? "dark"
+      : "";
+    api.setPillTheme({
+      themeClass,
+      lightMode: document.body.classList.contains("light-mode"),
+      extraDark: document.body.classList.contains("extra-dark"),
+      cssVars: {
+        "--text": pick("--text"),
+        "--accent": pick("--accent"),
+        "--accent-2": pick("--accent-2"),
+        "--muted": pick("--muted"),
+        "--border": pick("--border"),
+        "--glass-2": pick("--glass-2")
+      }
+    });
+  };
+
+  const syncDownloadsPanelPlacement = () => {
+    if (!downloadsPanel) return;
+    const tabsOnTop = vm.settings.tabsPosition === "top";
+    const tabsOnBottom = vm.settings.tabsPosition === "bottom";
+    const topOffset = DOWNLOAD_PANEL_MARGIN + (tabsOnTop ? TABS_DOCK_HEIGHT : 0) + (isTopPillMode() ? TOP_PILL_RESERVE : 0);
+    const bottomOffset = DOWNLOAD_PANEL_MARGIN + (tabsOnBottom ? TABS_DOCK_HEIGHT : 0);
+    downloadsPanel.style.top = `${topOffset}px`;
+    downloadsPanel.style.bottom = `${bottomOffset}px`;
+    downloadsPanel.style.maxHeight = `calc(100vh - ${topOffset + bottomOffset}px)`;
+  };
+
+  // syncLayout drives the BrowserView's reserved insets via api.setLayout. In Electron a
+  // BrowserView is a native child view that paints over any renderer DOM within its
+  // bounds, so the pill and downloads panel can only stay visible above the page by
+  // carving out a real inset for the duration of their visible state. The pure inset
+  // math is computed in ui/viewmodel/layoutDecisions.js (unit-tested) and consumed here.
+  const syncLayout = () => {
+    syncDownloadsPanelPlacement();
+    const compute = layoutDecisions.computeBrowserViewLayout;
+    if (typeof compute !== "function") {
+      // Defensive fallback: collapse the WebView so we never paint over chrome that
+      // would otherwise be hidden under it. Should never run if layoutDecisions.js
+      // loaded correctly.
+      api.setLayout(0, 0, 0, 0, true);
+      return;
+    }
+    const layout = compute({
+      isHome: Boolean(vm.isHome),
+      isSettingsOpen: Boolean(isSettingsPageOpen),
+      tabsPosition: vm.settings.tabsPosition || "bottom",
+      pillPosition: vm.settings.pillPosition || "bottom",
+      isPillVisible: isPillVisible(),
+      isDownloadsOpen: Boolean(isDownloadsOpen),
+      viewportWidth: Math.max(0, Number(window.innerWidth) || 0)
+    });
+    api.setLayout(layout.top, layout.bottom, layout.left, layout.right, layout.hideWebView);
+    publishPillState();
+  };
+
+  // The pill must stay visible for at least PILL_MIN_VISIBLE_MS after being summoned
+  // so the user can react and click it. A naive hide (e.g., a stray mousemove) gets
+  // deferred via pendingPillHideTimer until the grace window elapses.
+  const PILL_MIN_VISIBLE_MS = 5000;
+  let lastPillShownAt = 0;
+  let pendingPillHideTimer = null;
   const setBottomPillVisible = (visible) => {
-    if (visible) bottomPill.classList.add("visible");
-    else bottomPill.classList.remove("visible");
+    if (visible) {
+      if (pendingPillHideTimer) {
+        clearTimeout(pendingPillHideTimer);
+        pendingPillHideTimer = null;
+      }
+      const wasHidden = !bottomPill.classList.contains("visible");
+      bottomPill.classList.add("visible");
+      // Reset the grace timer on every fresh show OR when re-affirming visibility
+      // during the grace window — the user expects the 5-second clock to restart
+      // whenever the pill is summoned, not just the first time.
+      if (wasHidden) lastPillShownAt = Date.now();
+      else if (lastPillShownAt === 0) lastPillShownAt = Date.now();
+      syncLayout();
+      return;
+    }
+    // Hide path: enforce the 5-second floor by deferring if the pill was shown too
+    // recently. If a defer is already armed, leave it — it'll re-check on fire.
+    const elapsed = Date.now() - lastPillShownAt;
+    if (lastPillShownAt > 0 && elapsed < PILL_MIN_VISIBLE_MS) {
+      if (pendingPillHideTimer) return;
+      pendingPillHideTimer = setTimeout(() => {
+        pendingPillHideTimer = null;
+        // Re-evaluate at fire time: the chrome may have raised the pill again, in
+        // which case the visible class is still there and we leave it alone.
+        if (!shouldAutoTrackPill()) return;
+        bottomPill.classList.remove("visible");
+        lastPillShownAt = 0;
+        syncLayout();
+      }, PILL_MIN_VISIBLE_MS - elapsed);
+      return;
+    }
+    bottomPill.classList.remove("visible");
+    lastPillShownAt = 0;
     syncLayout();
   };
 
@@ -651,6 +778,8 @@
       startWallpaperVideo.load();
     }
     document.body.style.setProperty("--wallpaper-blur", `${vm.settings.wallpaperBlur || 0}px`);
+    // Push theme tokens to the pill BrowserView's renderer so its bubble matches.
+    publishPillTheme();
   };
 
   const applySettingsToUi = () => {
@@ -702,14 +831,19 @@
     controls.statusText.style.display = s.showStatusTag ? "block" : "none";
 
     const isTop = s.pillPosition === "top";
+    const tabsPosition = s.tabsPosition || "bottom";
     document.body.classList.toggle("pill-top", isTop);
     document.body.classList.toggle("pill-bottom-mode", !isTop);
+    document.body.classList.toggle("tabs-top", tabsPosition === "top");
+    document.body.classList.toggle("tabs-bottom", tabsPosition === "bottom");
+    document.body.classList.toggle("tabs-left", tabsPosition === "left");
     document.body.classList.toggle("adblock-shield-hidden", !s.showAdblockShield);
 
     applyThemeAndAppearance();
     highlightActiveOption(themePresetGroup, "themePreset", s.themePreset);
     highlightActiveOption(fontGroup, "font", s.appFont);
     highlightActiveOption(pillPositionGroup, "pillPosition", s.pillPosition || "bottom");
+    highlightActiveOption(tabsPositionGroup, "tabsPosition", tabsPosition);
     customThemeRow.style.display = s.themePreset === "custom" ? "grid" : "none";
     syncWallpaperSettingsVisibility();
     renderHistory();
@@ -752,7 +886,7 @@
 
   const applyAboutSystemInfo = async () => {
     const info = (await api.getSystemInfo?.()) || {};
-    if (aboutVersion) aboutVersion.textContent = info.version || "V2.0.0 \"Atlantis\"";
+    if (aboutVersion) aboutVersion.textContent = info.version || "V2.1.0 \"Atlantis\"";
     if (aboutChromium) aboutChromium.textContent = info.chromium || "-";
     if (aboutElectron) aboutElectron.textContent = info.electron || "-";
     if (aboutOs) aboutOs.textContent = info.os || navigator.platform || "-";
@@ -858,6 +992,7 @@
 
   const openSettingsPage = () => {
     isSettingsPageOpen = true;
+    if (isDownloadsOpen) toggleDownloadsPanel(false);
     settingsPage.classList.add("visible");
     setBottomPillVisible(true);
     activateSettingsSection("section-general");
@@ -869,7 +1004,11 @@
   const closeSettingsPage = () => {
     isSettingsPageOpen = false;
     settingsPage.classList.remove("visible");
-    if (!vm.isHome && vm.settings.autoHidePill) setBottomPillVisible(false);
+    // Only retract if the pill is hover-reachable; otherwise we'd hide it permanently.
+    const tabsPosition = vm.settings.tabsPosition || "bottom";
+    if (!vm.isHome && vm.settings.autoHidePill && tabsPosition === "bottom") {
+      setBottomPillVisible(false);
+    }
     syncLayout();
   };
 
@@ -879,6 +1018,14 @@
     if (input.startsWith("http://") || input.startsWith("https://")) return input;
     if (input.includes(".") && !input.includes(" ")) return `https://${input}`;
     return `${SEARCH_ENGINES[vm.settings.searchEngine] || SEARCH_ENGINES.google}${encodeURIComponent(input)}`;
+  };
+
+  const sanitizeUrlForDisplay = (value, isHome) => {
+    const safe = String(value || "").trim();
+    if (!safe) return "";
+    if (isHome) return "";
+    if (safe === "about:blank") return "";
+    return safe;
   };
 
   const toHost = (value) => {
@@ -1032,6 +1179,74 @@
     });
   };
 
+  const renderDownloads = () => {
+    if (!downloadsList) return;
+    downloadsList.innerHTML = "";
+    const items = Array.isArray(vm.downloads) ? vm.downloads : [];
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.className = "history-item";
+      empty.innerHTML = `<div class="history-url">No downloads yet.</div>`;
+      downloadsList.appendChild(empty);
+      return;
+    }
+    items.forEach((entry) => {
+      const card = document.createElement("div");
+      card.className = "download-item";
+      const state = String(entry.state || "progressing");
+      const meta = state === "progressing" ? "Downloading..." : state.charAt(0).toUpperCase() + state.slice(1);
+      const bytesPart =
+        Number(entry.totalBytes) > 0
+          ? `${formatBytes(entry.receivedBytes)} / ${formatBytes(entry.totalBytes)}`
+          : formatBytes(entry.receivedBytes);
+      const row = document.createElement("div");
+      row.className = "download-item-main";
+      row.innerHTML = `
+        <div class="download-name">${entry.fileName || "Download"}</div>
+        <div class="download-meta">${meta} • ${bytesPart}</div>
+      `;
+      const progress = document.createElement("div");
+      progress.className = "download-progress";
+      const fill = document.createElement("div");
+      fill.className = "download-progress-fill";
+      fill.style.width = `${Math.max(0, Math.min(100, Number(entry.percent) || 0))}%`;
+      progress.appendChild(fill);
+      const actions = document.createElement("div");
+      actions.className = "download-actions";
+      const openBtn = document.createElement("button");
+      openBtn.className = "settings-close";
+      openBtn.textContent = "Open";
+      openBtn.disabled = !entry.canOpen;
+      openBtn.addEventListener("click", () => api.openDownload?.(entry.id));
+      const openFolderBtn = document.createElement("button");
+      openFolderBtn.className = "settings-close";
+      openFolderBtn.textContent = "Show in folder";
+      openFolderBtn.disabled = !entry.targetPath;
+      openFolderBtn.addEventListener("click", () => api.openDownloadFolder?.(entry.id));
+      actions.appendChild(openBtn);
+      actions.appendChild(openFolderBtn);
+      card.appendChild(row);
+      card.appendChild(progress);
+      card.appendChild(actions);
+      downloadsList.appendChild(card);
+    });
+  };
+
+  const toggleDownloadsPanel = async (forceOpen = null) => {
+    const nextOpen = typeof forceOpen === "boolean" ? forceOpen : !isDownloadsOpen;
+    isDownloadsOpen = nextOpen;
+    downloadsPanel?.classList.toggle("visible", nextOpen);
+    controls.downloadsBtn?.classList.toggle("active", nextOpen);
+    // Reserving the right inset is what actually pulls the BrowserView in so the panel
+    // can be seen. Without this call the panel sat behind the embedded web view.
+    syncLayout();
+    if (nextOpen) {
+      const items = await api.getDownloads?.();
+      if (items) vm.setDownloads(items);
+      renderDownloads();
+    }
+  };
+
   const executeSearchOrGo = async (value) => {
     const raw = String(value || "").trim();
     if (!raw) return;
@@ -1047,7 +1262,10 @@
     isUserEditingUrl = false;
     controls.urlInput.blur();
     await api.go(target);
-    if (!vm.isHome && vm.settings.autoHidePill) setBottomPillVisible(false);
+    const tabsPosition = vm.settings.tabsPosition || "bottom";
+    if (!vm.isHome && vm.settings.autoHidePill && tabsPosition === "bottom") {
+      setBottomPillVisible(false);
+    }
   };
 
   const openIncognitoTab = async () => {
@@ -1080,12 +1298,26 @@
     controls.forwardBtn.disabled = !vm.canGoForward;
     controls.stopBtn.disabled = !vm.isLoading;
     controls.statusText.textContent = vm.isLoading ? "Loading..." : vm.host || "Ready";
-    if (!isUserEditingUrl) controls.urlInput.value = vm.url || "";
+    if (!isUserEditingUrl) controls.urlInput.value = sanitizeUrlForDisplay(vm.url, vm.isHome);
 
     startScreen.classList.toggle("hidden", !vm.isHome);
     bottomPill.classList.toggle("home-mode", vm.isHome);
-    // Pill is always visible in top searchbar mode, on home, in settings, or when auto-hide is off.
-    if (vm.isHome || isSettingsPageOpen || !vm.settings.autoHidePill || isTopPillMode()) {
+    // The chrome's hover-to-reveal logic only works when the chrome has a strip the
+    // user can actually hover. The tabs dock at the bottom is that strip when
+    // tabsPosition === "bottom"; in top/left-tabs mode the page BrowserView fully
+    // covers the chrome's reveal zone, so auto-hide leaves the pill unreachable. In
+    // that combo we treat auto-hide as effectively off and keep the pill always
+    // visible (its own native BrowserView renders above the page, so this is just a
+    // "show", not a page resize).
+    const tabsPosition = vm.settings.tabsPosition || "bottom";
+    const pillIsReachableViaHover = tabsPosition === "bottom";
+    if (
+      vm.isHome ||
+      isSettingsPageOpen ||
+      !vm.settings.autoHidePill ||
+      isTopPillMode() ||
+      !pillIsReachableViaHover
+    ) {
       setBottomPillVisible(true);
     }
 
@@ -1108,8 +1340,10 @@
   controls.homeBtn.addEventListener("click", () => api.home());
   controls.reloadBtn.addEventListener("click", () => api.reload());
   controls.stopBtn.addEventListener("click", () => api.stop());
+  controls.downloadsBtn?.addEventListener("click", () => toggleDownloadsPanel());
   controls.settingsBtn.addEventListener("click", openSettingsPage);
   controls.closeSettingsBtn.addEventListener("click", closeSettingsPage);
+  controls.closeDownloadsBtn?.addEventListener("click", () => toggleDownloadsPanel(false));
   controls.newTabBtn.addEventListener("click", () => api.newTab({ url: "about:blank" }));
   controls.newIncognitoTabBtn.addEventListener("click", openIncognitoTab);
   controls.incognitoBtn.addEventListener("click", openIncognitoTab);
@@ -1122,7 +1356,7 @@
   });
   controls.urlInput.addEventListener("blur", () => {
     isUserEditingUrl = false;
-    controls.urlInput.value = vm.url || "";
+    controls.urlInput.value = sanitizeUrlForDisplay(vm.url, vm.isHome);
   });
   controls.urlInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") executeSearchOrGo(controls.urlInput.value);
@@ -1262,6 +1496,14 @@
     });
   });
 
+  tabsPositionGroup?.querySelectorAll("[data-tabs-position]").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const next = chip.dataset.tabsPosition === "left" ? "left" : chip.dataset.tabsPosition === "top" ? "top" : "bottom";
+      saveSettings({ tabsPosition: next }, false);
+      syncLayout();
+    });
+  });
+
   controls.adblockShieldBtn?.addEventListener("click", () => {
     const next = !vm.settings.blockTrackers;
     saveSettings({ blockTrackers: next, adBlocker: next }, true);
@@ -1278,27 +1520,50 @@
     renderStickerGallery();
   });
 
-  bottomRevealZone.addEventListener(
-    "mouseenter",
-    () => !vm.isHome && !isTopPillMode() && setBottomPillVisible(true)
-  );
-  tabsDock.addEventListener(
-    "mouseenter",
-    () => !vm.isHome && !isTopPillMode() && setBottomPillVisible(true)
-  );
+  // Pill discoverability — generous thresholds with hysteresis so the pill is easy to
+  // summon without flickering. Reveal triggers within ~140 px of the bottom; hide only
+  // after the cursor leaves a wider ~260 px band. Both the dedicated reveal zone and
+  // the tabs dock trigger reveal, and the global mousemove handler is a redundant
+  // fallback for when the dedicated zone is covered (e.g. by a focused web element
+  // capturing pointer events).
+  const PILL_REVEAL_DISTANCE = 140;
+  const PILL_HIDE_DISTANCE = 260;
+  // Auto-track (the hover-to-reveal / mousemove-threshold logic) only makes sense
+  // when the chrome has a reachable bottom strip. With tabs at top or left, the page
+  // BrowserView fully covers the chrome's bottom area, so the only hide events that
+  // can fire are tabsDock-mouseleave (top of the window) and the global mousemove
+  // saying "you're far from the bottom" — both of which would race against render()'s
+  // forced-visible rule and leave the pill flickering or stuck hidden. Gate auto-track
+  // on tabsPosition === "bottom" so the pill stays the way render() decided it.
+  const shouldAutoTrackPill = () =>
+    !vm.isHome &&
+    !isSettingsPageOpen &&
+    vm.settings.autoHidePill &&
+    !isTopPillMode() &&
+    (vm.settings.tabsPosition || "bottom") === "bottom";
+
+  bottomRevealZone.addEventListener("mouseenter", () => {
+    if (!vm.isHome && !isTopPillMode()) setBottomPillVisible(true);
+  });
+  bottomRevealZone.addEventListener("mousemove", () => {
+    if (!vm.isHome && !isTopPillMode()) setBottomPillVisible(true);
+  });
+  tabsDock.addEventListener("mouseenter", () => {
+    if (!vm.isHome && !isTopPillMode()) setBottomPillVisible(true);
+  });
   tabsDock.addEventListener("mouseleave", () => {
-    if (isTopPillMode()) return;
-    if (!vm.isHome && !isSettingsPageOpen && vm.settings.autoHidePill) setBottomPillVisible(false);
+    if (!shouldAutoTrackPill()) return;
+    setBottomPillVisible(false);
   });
   bottomPill.addEventListener("mouseleave", () => {
-    if (isTopPillMode()) return;
-    if (!vm.isHome && !isSettingsPageOpen && vm.settings.autoHidePill) setBottomPillVisible(false);
+    if (!shouldAutoTrackPill()) return;
+    setBottomPillVisible(false);
   });
   window.addEventListener("mousemove", (event) => {
-    if (vm.isHome || isSettingsPageOpen || !vm.settings.autoHidePill || isTopPillMode()) return;
+    if (!shouldAutoTrackPill()) return;
     const distanceFromBottom = window.innerHeight - event.clientY;
-    if (distanceFromBottom < 85) setBottomPillVisible(true);
-    if (distanceFromBottom > 170) setBottomPillVisible(false);
+    if (distanceFromBottom < PILL_REVEAL_DISTANCE) setBottomPillVisible(true);
+    else if (distanceFromBottom > PILL_HIDE_DISTANCE) setBottomPillVisible(false);
   });
 
   window.addEventListener("keydown", (event) => {
@@ -1307,6 +1572,10 @@
       target instanceof HTMLElement &&
       (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
     if (event.key === "Escape" && isTypingInEditableElement) return;
+    if (event.key === "Escape" && isDownloadsOpen) {
+      event.preventDefault();
+      return toggleDownloadsPanel(false);
+    }
     if (event.key === "Escape" && isSettingsPageOpen) return closeSettingsPage();
     if (event.key === "Escape" && vm.isLoading) {
       event.preventDefault();
@@ -1327,6 +1596,16 @@
       setBottomPillVisible(true);
       tabSearchInput?.focus();
       tabSearchInput?.select();
+      return;
+    }
+    if (event.ctrlKey && event.key === ",") {
+      event.preventDefault();
+      openSettingsPage();
+      return;
+    }
+    if (event.ctrlKey && event.key.toLowerCase() === "j") {
+      event.preventDefault();
+      toggleDownloadsPanel(true);
       return;
     }
     if (isTypingInEditableElement) return;
@@ -1423,6 +1702,22 @@
     vm.setAdblockStats(stats);
     renderAdblockBadge();
   });
+  api.onDownloadsUpdated?.((items) => {
+    vm.setDownloads(items);
+    if (isDownloadsOpen) renderDownloads();
+  });
+  // Pill BrowserView routes user actions through main; main re-emits them here so
+  // the existing chrome handlers (settings open, downloads toggle, adblock toggle)
+  // stay the single source of truth.
+  api.onPillToggleDownloads?.(() => toggleDownloadsPanel());
+  api.onPillOpenSettings?.(() => openSettingsPage());
+  api.onPillToggleAdblock?.(() => {
+    const nextValue = !vm.settings.blockTrackers;
+    vm.updateSetting("blockTrackers", nextValue);
+    inputs.blockTrackersToggle.checked = nextValue;
+    updateRuntimeSettings();
+  });
+  api.onPillGo?.((raw) => executeSearchOrGo(raw));
   // Seed the badge from the current count immediately so it never reads "0 blocked"
   // longer than necessary.
   api.getAdblockStats?.().then((stats) => {
@@ -1430,6 +1725,9 @@
       vm.setAdblockStats(stats);
       renderAdblockBadge();
     }
+  });
+  api.getDownloads?.().then((items) => {
+    if (items) vm.setDownloads(items);
   });
 
   window.addEventListener("resize", syncLayout);

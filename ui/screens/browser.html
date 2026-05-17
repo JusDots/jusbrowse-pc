@@ -25,10 +25,11 @@
       <button id="backBtn" class="pill-btn" title="Back (Alt+Left)">&#8592;</button>
       <button id="forwardBtn" class="pill-btn" title="Forward (Alt+Right)">&#8594;</button>
       <button id="homeBtn" class="pill-btn" title="Home (Alt+Home)">&#8962;</button>
-      <input id="urlInput" class="pill-input" placeholder="Search or type URL" />
+      <input id="urlInput" class="pill-input" placeholder="Search Here" />
       <button id="goBtn" class="pill-btn primary" title="Go (Enter)">&#10148;</button>
       <button id="reloadBtn" class="pill-btn" title="Reload (F5)">&#10227;</button>
       <button id="stopBtn" class="pill-btn" title="Stop (Esc)">&#10005;</button>
+      <button id="downloadsBtn" class="pill-btn" title="Downloads (Ctrl+J)">&#8681;</button>
       <button id="adblockShieldBtn" class="pill-btn pill-shield" title="Toggle ad blocker">&#128737;</button>
       <button id="incognitoBtn" class="pill-btn" title="New Incognito Tab (Ctrl+Shift+N)">🕶</button>
       <button id="settingsBtn" class="pill-btn" title="Settings">&#9881;</button>
@@ -84,6 +85,15 @@
                 <button class="option-chip" data-pill-position="top">Top searchbar (Chrome style)</button>
               </div>
               <p class="settings-hint">When using the top searchbar, the address bar sits with the tabs and is always visible.</p>
+            </div>
+            <div class="settings-row">
+              <label>Tabs position</label>
+              <div id="tabsPositionGroup" class="chip-group">
+                <button class="option-chip" data-tabs-position="bottom">Bottom row</button>
+                <button class="option-chip" data-tabs-position="top">Top row</button>
+                <button class="option-chip" data-tabs-position="left">Left sidebar</button>
+              </div>
+              <p class="settings-hint">Left sidebar keeps tabs always visible and easier to scan with many tabs.</p>
             </div>
             <div class="settings-row toggle-row pill-bottom-only">
               <div>
@@ -456,7 +466,7 @@
             </p>
             <div class="settings-row">
               <label>Version</label>
-              <p id="aboutVersion" class="settings-hint">V2.0.0 "Atlantis"</p>
+              <p id="aboutVersion" class="settings-hint">V2.1.0 "Atlantis"</p>
               <label>Chromium</label>
               <p id="aboutChromium" class="settings-hint">-</p>
               <label>Electron</label>
@@ -474,7 +484,8 @@
               <code>Ctrl+Shift+N</code> new incognito window, <code>Ctrl+L</code>/<code>F6</code> focus address bar,
               <code>F5</code>/<code>Ctrl+R</code> reload, <code>Ctrl+Shift+R</code>/<code>Ctrl+F5</code> hard reload,
               <code>F11</code> fullscreen, <code>Ctrl+=</code>/<code>Ctrl+-</code>/<code>Ctrl+0</code> zoom in/out/reset,
-              <code>Alt+Home</code> home, <code>Alt+Left</code>/<code>Alt+Right</code> back/forward, <code>Esc</code> stop loading.
+              <code>Alt+Home</code> home, <code>Alt+Left</code>/<code>Alt+Right</code> back/forward, <code>Ctrl+J</code> downloads,
+              <code>Ctrl+,</code> settings, <code>Esc</code> stop loading.
             </p>
             <div class="settings-row">
               <label>Auth diagnostics</label>
@@ -498,7 +509,15 @@
     <div id="adblockBadge" class="adblock-badge" title="Trackers and ads blocked this session" aria-live="polite">0 blocked</div>
     <div id="externalAuthNoticeStack" class="external-auth-notice-stack" aria-live="polite" aria-atomic="false"></div>
     <div id="passwordPromptStack" class="password-prompt-stack" aria-live="polite" aria-atomic="false"></div>
+    <section id="downloadsPanel" class="downloads-panel" aria-live="polite">
+      <header class="downloads-header">
+        <strong>Downloads</strong>
+        <button id="closeDownloadsBtn" class="settings-close">Close</button>
+      </header>
+      <div id="downloadsList" class="downloads-list"></div>
+    </section>
 
+    <script src="../viewmodel/layoutDecisions.js"></script>
     <script src="../viewmodel/browserViewModel.js"></script>
     <script src="../components/topbar.js"></script>
   </body>

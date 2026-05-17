@@ -1,0 +1,40 @@
+{
+  "pathA": {
+    "telemetry": [
+      {
+        "eventName": "auth.flow.started",
+        "payload": {
+          "flowId": "patha-auth-flow-1",
+          "correlationId": "corr-patha-auth-flow-1",
+          "providerKey": "google-family",
+          "sourceTabId": "tab-1",
+          "strategy": "external-browser"
+        }
+      },
+      {
+        "eventName": "auth.flow.completed",
+        "payload": {
+          "flowId": "patha-auth-flow-1",
+          "correlationId": "corr-patha-auth-flow-1",
+          "terminalState": "completed",
+          "reason": "token-observed"
+        }
+      }
+    ],
+    "telemetryValidation": {
+      "totalEvents": 2,
+      "validEvents": 2,
+      "invalidEvents": 0,
+      "violations": []
+    },
+    "terminalSummaries": [
+      {
+        "flowId": "patha-auth-flow-1",
+        "correlationId": "corr-patha-auth-flow-1",
+        "terminalState": "completed",
+        "reason": "token-observed",
+        "providerKey": "google-family"
+      }
+    ]
+  }
+}
