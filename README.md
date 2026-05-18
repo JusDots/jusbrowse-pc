@@ -164,10 +164,4 @@ jusbrowse-pc/
 
 ---
 
-## License
-
-[MIT](LICENSE)
-
----
-
 > Made with ❤️ and dots(.) by JusDots Labs
